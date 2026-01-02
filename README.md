@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+
 # My Personal Website
 
 This repository contains a small full-stack site: a React + Vite frontend and a FastAPI backend. It is designed to run locally for development and via Docker Compose for production on a self-hosted machine.
@@ -30,7 +31,7 @@ This repository contains a small full-stack site: a React + Vite frontend and a 
 
 Follow these steps to run the frontend and backend locally (recommended when developing features).
 
-1) Frontend
+1. Frontend
 
 ```bash
 cd frontend
@@ -40,7 +41,7 @@ npm run dev
 
 The frontend starts with Vite. By default it uses host `127.0.0.1` and port `5173` per `package.json`.
 
-2) Backend
+2. Backend
 
 Create and activate a virtual environment, install requirements, then run Uvicorn:
 
@@ -130,7 +131,8 @@ Tailscale Funnel StatusIf the site is unreachable from the public internet, veri
 If it shows tailnet only, re-run the tailscale funnel 443 on command.Storage PruningTo prevent the Mini PC from running out of disk space due to old Docker layers:docker system prune -f
 🔗 Access LinksPublic URL: https://roika-server.hedgehog-heptatonic.ts.net/Private Tailnet IP: http://100.106.207.88Portainer: http://100.106.207.88:9000
 
->>>>>>> origin/update-readme
+> > > > > > > origin/update-readme
+
 # My Personal Website — Infrastructure & CI/CD Guide
 
 This repository contains a full-stack application (React frontend + FastAPI backend) deployed to a private Mini PC using Docker Compose, a self-hosted GitHub Actions runner, and Tailscale Funnel for secure public access.
