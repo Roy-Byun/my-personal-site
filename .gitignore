@@ -1,0 +1,24 @@
+# Local history (VS Code extension)
+.history/
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+
+# Node/React
+node_modules/
+dist/
+build/
+.eslintcache
+
+# Docker
+.dockerignore
