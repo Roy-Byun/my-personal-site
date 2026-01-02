@@ -1,11 +1,3 @@
-git commit -m "Your update message"
-git push origin main
-Automatic Deployment:GitHub triggers the self-hosted runner on the Mini PC.The runner executes docker compose down and docker compose up --build -d.The site updates automatically within seconds.🐳 Container Management (Portainer)Accessible at: http://100.106.207.88:9000Monitoring: Check CPU/RAM usage of containers.Logs: Click the log icon for the backend or frontend containers to debug runtime errors.Quick Restart: Manual control over services if a container hangs.⚠️ Maintenance ChecklistPort ConflictsIf you encounter a 502 Bad Gateway, ensure the host OS is not running its own Nginx/Apache instance on Port 80:sudo systemctl stop nginx
-sudo systemctl disable nginx
-Tailscale Funnel StatusIf the site is unreachable from the public internet, verify the funnel is active:tailscale funnel status
-If it shows tailnet only, re-run the tailscale funnel 443 on command.Storage PruningTo prevent the Mini PC from running out of disk space due to old Docker layers:docker system prune -f
-🔗 Access LinksPublic URL: https://roika-server.hedgehog-heptatonic.ts.net/Private Tailnet IP: http://100.106.207.88Portainer: http://100.106.207.88:9000
-
 # My Personal Website — Infrastructure & CI/CD Guide
 
 This repository contains a full-stack application (React frontend + FastAPI backend) deployed to a private Mini PC using Docker Compose, a self-hosted GitHub Actions runner, and Tailscale Funnel for secure public access.
