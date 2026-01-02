@@ -4,7 +4,8 @@ function App() {
   const [msg, setMsg] = useState("Connecting...");
 
   useEffect(() => {
-    fetch("http://100.106.207.88:8000/api")
+    // Relative path works because Nginx routes /api to the backend
+    fetch("/api")
       .then((res) => res.json())
       .then((data) => setMsg(data.message))
       .catch(() => setMsg("Backend Unreachable"));
