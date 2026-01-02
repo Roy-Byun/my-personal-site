@@ -28,7 +28,7 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"] # Updated path
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"] # Updated path
       interval: 10s
       timeout: 5s
       retries: 5
