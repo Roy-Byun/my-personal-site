@@ -4,8 +4,7 @@ function App() {
   const [msg, setMsg] = useState("Connecting...");
 
   useEffect(() => {
-    // Note: Replace with your Tailscale MagicDNS name later
-    fetch("http://localhost:8000/api")
+    fetch("http://100.106.207.88:8000/api")
       .then((res) => res.json())
       .then((data) => setMsg(data.message))
       .catch(() => setMsg("Backend Unreachable"));
