@@ -16,22 +16,21 @@ services:
 
   backend:
     build: ./backend
-    # --- ADD THESE LINES FOR REAL-TIME STATS ---
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/myapp_db
       - PROCFS_PATH=/host/proc
-    # ------------------------------------------
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"] # Updated path
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s # Increased interval
+      timeout: 10s # Increased timeout
       retries: 5
+      start_period: 20s # Added start period
     restart: always
 
   db:
