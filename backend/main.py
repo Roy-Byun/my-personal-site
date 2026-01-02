@@ -11,6 +11,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/api")
+@app.get("/") # Nginx rewrites /api/ to /
 def read_root():
     return {"message": "Hello from Mini PC Backend"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy"}
