@@ -2,12 +2,19 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+}
+
 body {
   margin: 0;
-  background-color: #f8fafc;
+  padding: 0;
+  background-color: #f8fafc; /* Matches slate-50 */
 }
 
 #root {
   width: 100%;
-  text-align: left; /* Explicitly fix the unorganized centering */
+  margin: 0;
+  padding: 0;
+  text-align: left;
 }
