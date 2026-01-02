@@ -5,7 +5,7 @@ function App() {
 
   useEffect(() => {
     // Relative path works because Nginx routes /api to the backend
-    fetch("/api")
+    fetch("/api/")
       .then((res) => res.json())
       .then((data) => setMsg(data.message))
       .catch(() => setMsg("Backend Unreachable"));
