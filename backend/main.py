@@ -21,9 +21,8 @@ app.add_middleware(
 def health_check():
     return {"status": "healthy"}
 
-# Nginx rewrites /api/system-stats -> /system-stats
 @app.get("/system-stats")
-def get_stats():
+def get_system_stats():
     return {
         "cpu_usage": psutil.cpu_percent(interval=0.1),
         "memory": psutil.virtual_memory().percent,
