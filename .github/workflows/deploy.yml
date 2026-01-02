@@ -1,11 +1,13 @@
-name: Docker Deploy
+name: Deploy — Self-hosted Mini PC
+# This workflow deploys the application on the self-hosted runner (Mini PC).
+# It expects the runner to have Docker and Docker Compose available.
 on:
   push:
     branches: [main]
 
 jobs:
   deploy:
-    runs-on: self-hosted
+    runs-on: [self-hosted]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
