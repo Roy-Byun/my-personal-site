@@ -26,14 +26,16 @@ const SystemHealthPage = () => {
       const response = await fetch("/api/system-stats");
       const data = await response.json();
 
-      // Alert Logic: Trigger if system has been up for less than 10 mins (600s)
-      // and it's a fresh load or the uptime reset.
-      if (data.raw_uptime < 600 && data.raw_uptime < prevUptime.current) {
-        setShowAlert(true);
-      }
-      prevUptime.current = data.raw_uptime;
-
-      setStats(data);
+      setStats({
+        cpu: data.cpu_usage,
+        ram: data.memory,
+        disk: data.disk,
+        uptime_formatted: data.uptime_formatted,
+        boot_time: data.boot_time,
+        db_status: data.db_status,
+        raw_uptime: data.raw_uptime,
+      });
+      setLoading(false);
     } catch (error) {
       console.error("Failed to fetch system stats:", error);
     }
@@ -98,7 +100,7 @@ const SystemHealthPage = () => {
               System Uptime
             </h3>
             <p className="text-xl font-bold text-slate-800">
-              {stats.uptime_formatted}
+              {stats.uptime_formatted || "0m"}
             </p>
             <p className="text-[10px] text-slate-400">
               Booted: {stats.boot_time}
