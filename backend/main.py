@@ -21,7 +21,7 @@ app.add_middleware(
 def health_check():
     return {"status": "healthy"}
 
-@app.get("/system-stats")
+@app.get("/system-stats") # Ensure no "/api" prefix here
 def get_system_stats():
     return {
         "cpu_usage": psutil.cpu_percent(interval=0.1),
