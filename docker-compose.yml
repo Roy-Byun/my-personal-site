@@ -10,12 +10,16 @@ services:
       backend:
         condition: service_healthy
     restart: always
+    networks:
+      - personal_network
 
   frontend:
     build: ./frontend
     volumes:
       - frontend_assets:/usr/share/nginx/html
     restart: always
+    networks:
+      - personal_network
 
   backend:
     build: ./backend
@@ -35,6 +39,8 @@ services:
       retries: 5
       start_period: 20s # Added start period
     restart: always
+    networks:
+      - personal_network
 
   db:
     image: postgres:15-alpine
@@ -50,7 +56,13 @@ services:
       timeout: 5s
       retries: 5
     restart: always
+    networks:
+      - personal_network
 
 volumes:
   postgres_data:
   frontend_assets:
+
+networks:
+  personal_network:
+    external: true
