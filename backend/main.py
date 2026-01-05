@@ -1,13 +1,13 @@
-import psutil
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from routers import health, system  # Import your modules
 
-# Ensure psutil reads from the host volumes mounted in docker-compose
+# Set psutil path before any logic
 if os.path.exists('/host/proc'):
     os.environ['PROCFS_PATH'] = '/host/proc'
 
-app = FastAPI()
+app = FastAPI(title="Roika Mini PC API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,15 +16,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Nginx rewrites /api/health -> /health
-@app.get("/health")
-def health_check():
-    return {"status": "healthy"}
-
-@app.get("/system-stats") # Ensure no "/api" prefix here
-def get_system_stats():
-    return {
-        "cpu_usage": psutil.cpu_percent(interval=0.1),
-        "memory": psutil.virtual_memory().percent,
-        "disk": psutil.disk_usage('/').percent
-    }
+# Include the routers
+app.include_router(health.router)
+app.include_router(system.router)
