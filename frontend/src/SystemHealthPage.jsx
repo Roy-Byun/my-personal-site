@@ -8,12 +8,26 @@ import {
   AlertCircle,
 } from "lucide-react";
 
+// Get Version and Date from Environment Variables (injected at build time)
+// Supports both Vite (import.meta.env) and Create-React-App (process.env)
+const getEnv = (key) => {
+  if (typeof import.meta !== "undefined" && import.meta.env) {
+    return import.meta.env[key];
+  }
+  return process.env[key];
+};
+
+const BUILD_VERSION =
+  getEnv("VITE_APP_VERSION") || getEnv("REACT_APP_VERSION") || "Dev-Local";
+const BUILD_DATE =
+  getEnv("VITE_APP_BUILD_DATE") || getEnv("REACT_APP_BUILD_DATE") || "Just Now";
+
 const SystemHealthPage = () => {
   const [stats, setStats] = useState({
     cpu_usage: 0,
     memory: 0,
     disk: 0,
-    uptime_formatted: "0m",
+    uptime_formatted: "Loading...", // Default state to prevent "Hours" flash
     boot_time: "",
     db_status: "Checking...",
     raw_uptime: 0,
@@ -26,7 +40,7 @@ const SystemHealthPage = () => {
       const response = await fetch("/api/system-stats");
       const data = await response.json();
 
-      // Alert Logic
+      // Alert Logic: Trigger if uptime is < 10 mins and has reset
       if (data.raw_uptime < 600 && prevUptime.current > data.raw_uptime) {
         setShowAlert(true);
       }
@@ -46,6 +60,7 @@ const SystemHealthPage = () => {
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
+      {/* Reboot Alert */}
       {showAlert && (
         <div className="mb-6 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-r-lg flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -63,9 +78,16 @@ const SystemHealthPage = () => {
         </div>
       )}
 
-      <h2 className="text-2xl font-bold text-slate-800 mb-6">
-        System Health Monitor
-      </h2>
+      {/* Header with Auto-Incrementing Version */}
+      <div className="flex justify-between items-end mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">
+          System Health Monitor
+        </h2>
+        <div className="text-[10px] text-slate-400 text-right font-mono flex flex-col">
+          <span>v{BUILD_VERSION}</span>
+          <span>{BUILD_DATE}</span>
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <StatCard
@@ -96,10 +118,10 @@ const SystemHealthPage = () => {
               System Uptime
             </h3>
             <p className="text-xl font-bold text-slate-800">
-              {stats.uptime_formatted ? stats.uptime_formatted : "Loading..."}
+              {stats.uptime_formatted || "Syncing..."}
             </p>
             <p className="text-[10px] text-slate-400">
-              Booted: {stats.boot_time || "N/A"}
+              Booted: {stats.boot_time || "..."}
             </p>
           </div>
         </div>
@@ -130,7 +152,6 @@ const SystemHealthPage = () => {
 };
 
 const StatCard = ({ icon: Icon, title, value, color }) => {
-  // Ensure numeric conversion to prevent toFixed errors
   const numericValue =
     typeof value === "number" ? value : parseFloat(value) || 0;
   return (

@@ -1,19 +1,52 @@
-name: Deploy — Self-hosted Mini PC
-# This workflow deploys the application on the self-hosted runner (Mini PC).
-# It expects the runner to have Docker and Docker Compose available.
+name: Deploy to Mini PC
+
 on:
   push:
-    branches: [main]
+    branches: ["main"]
+  workflow_dispatch:
 
 jobs:
   deploy:
-    runs-on: [self-hosted]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    runs-on: self-hosted # Runs on your Roika Mini PC
 
-      - name: Build and Start Containers
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Generate Version Variables
         run: |
-          docker compose down
+          # 1. Define Version (1.0 + GitHub Run Number)
+          VERSION="1.0.${{ github.run_number }}"
+
+          # 2. Define Date (Singapore Time)
+          DATE=$(TZ='Asia/Singapore' date +'%Y-%m-%d %H:%M')
+
+          echo "Preparing Build: v$VERSION at $DATE"
+
+          # 3. Write variables to .env file in frontend directory
+          # We write BOTH naming conventions (VITE_ and REACT_APP_) to be safe
+          echo "VITE_APP_VERSION=$VERSION" > frontend/.env
+          echo "VITE_APP_BUILD_DATE=$DATE" >> frontend/.env
+          echo "REACT_APP_VERSION=$VERSION" >> frontend/.env
+          echo "REACT_APP_BUILD_DATE=$DATE" >> frontend/.env
+
+      - name: Build and Deploy
+        run: |
+          # 1. Stop containers and remove old network links
+          docker compose down --remove-orphans
+
+          # 2. FORCE CLEANUP: Delete the persistent volume for frontend assets
+          # This ensures the new "v1.0.XX" files replace the old "Hours" files
+          # (Using a wildcard grep ensures we catch the volume even if the prefix varies)
+          docker volume rm $(docker volume ls -q | grep frontend_assets) || true
+
+          # 3. CLEAN BUILD FRONTEND (Missing in your snippet!)
+          # --no-cache is vital here to read the new .env variables we just created
           docker compose build --no-cache frontend
+
+          # 4. CLEAN BUILD BACKEND (Your request)
+          # --no-cache ensures Python copies the latest system.py and main.py
+          docker compose build --no-cache backend
+
+          # 5. Start everything up
           docker compose up -d
