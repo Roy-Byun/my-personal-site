@@ -9,9 +9,10 @@ import {
 } from "lucide-react";
 
 const SystemHealthPage = () => {
+  // 1. Initial state keys now match backend JSON keys exactly
   const [stats, setStats] = useState({
-    cpu: 0,
-    ram: 0,
+    cpu_usage: 0,
+    memory: 0,
     disk: 0,
     uptime_formatted: "0m",
     boot_time: "",
@@ -26,16 +27,14 @@ const SystemHealthPage = () => {
       const response = await fetch("/api/system-stats");
       const data = await response.json();
 
-      setStats({
-        cpu: data.cpu_usage,
-        ram: data.memory,
-        disk: data.disk,
-        uptime_formatted: data.uptime_formatted,
-        boot_time: data.boot_time,
-        db_status: data.db_status,
-        raw_uptime: data.raw_uptime,
-      });
-      setLoading(false);
+      // 2. Alert Logic: Triggers if uptime is < 10 mins and has reset
+      if (data.raw_uptime < 600 && prevUptime.current > data.raw_uptime) {
+        setShowAlert(true);
+      }
+      prevUptime.current = data.raw_uptime;
+
+      // 3. Directly set the object since keys are now identical
+      setStats(data);
     } catch (error) {
       console.error("Failed to fetch system stats:", error);
     }
@@ -71,6 +70,7 @@ const SystemHealthPage = () => {
         System Health Monitor
       </h2>
 
+      {/* Hardware Row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <StatCard
           icon={Cpu}
@@ -92,6 +92,7 @@ const SystemHealthPage = () => {
         />
       </div>
 
+      {/* Status Row */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex items-center gap-4">
           <Clock className="text-slate-400 w-8 h-8" />
@@ -139,7 +140,10 @@ const StatCard = ({ icon: Icon, title, value, color }) => (
     <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
       {title}
     </h3>
-    <p className="text-2xl font-bold text-slate-800">{value}%</p>
+    <p className="text-2xl font-bold text-slate-800">
+      {/* Use fallback to avoid empty display during loading */}
+      {typeof value === "number" ? value.toFixed(1) : "0"}%
+    </p>
   </div>
 );
 
