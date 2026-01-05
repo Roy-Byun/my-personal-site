@@ -5,6 +5,10 @@ from fastapi import APIRouter
 from datetime import datetime
 from sqlalchemy import create_engine, text
 
+
+if os.path.exists('/host/proc'):
+    os.environ['PROCFS_PATH'] = '/host/proc'
+    
 router = APIRouter()
 
 # Initialize DB Engine
