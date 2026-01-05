@@ -96,10 +96,10 @@ const SystemHealthPage = () => {
               System Uptime
             </h3>
             <p className="text-xl font-bold text-slate-800">
-              {stats.uptime_formatted}
+              {stats.uptime_formatted ? stats.uptime_formatted : "Loading..."}
             </p>
             <p className="text-[10px] text-slate-400">
-              Booted: {stats.boot_time}
+              Booted: {stats.boot_time || "N/A"}
             </p>
           </div>
         </div>
