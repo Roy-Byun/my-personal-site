@@ -11,9 +11,10 @@ const CATEGORIES = [
 ];
 
 const SOURCE_TYPES = [
-  { value: "newsapi", label: "NewsAPI.org", needsKey: true },
-  { value: "gnews",   label: "GNews.io",   needsKey: true },
-  { value: "rss",     label: "RSS Feed",   needsKey: false },
+  { value: "newsapi",  label: "NewsAPI.org",           needsKey: true,  queryRequired: false },
+  { value: "gnews",    label: "GNews.io",              needsKey: true,  queryRequired: false },
+  { value: "serpapi",  label: "SerpAPI (Google News)", needsKey: true,  queryRequired: true  },
+  { value: "rss",      label: "RSS Feed",              needsKey: false, queryRequired: false },
 ];
 
 const inputCls = "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500";
@@ -158,6 +159,9 @@ const SourcesTab = () => {
                     {s.source_type === "rss" ? <Rss className="w-3 h-3" /> : <Zap className="w-3 h-3" />}
                     {typeLabel(s.source_type)}
                     {s.has_api_key && <span className="ml-1 text-emerald-600 text-[10px]">●key</span>}
+                    {s.source_type === "serpapi" && s.query && (
+                      <span className="ml-1 text-slate-400 text-[10px] italic">"{s.query}"</span>
+                    )}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-xs text-slate-400 max-w-[180px] truncate">
@@ -215,14 +219,28 @@ const SourcesTab = () => {
                 <Field label={modal === "edit" ? "API Key (leave blank to keep existing)" : "API Key *"}>
                   <input name="api_key" value={form.api_key} onChange={handleChange} required={modal !== "edit"} type="password" autoComplete="off" className={inputCls} />
                 </Field>
-                <Field label="Search Query (blank = top headlines)">
-                  <input name="query" value={form.query} onChange={handleChange} placeholder="e.g. Korea technology" className={inputCls} />
-                </Field>
+
+                {form.source_type === "serpapi" ? (
+                  /* SerpAPI: query is the Google News search term (required) */
+                  <Field label="Search Query *">
+                    <input name="query" value={form.query} onChange={handleChange} required
+                      placeholder="e.g. space, Korea finance, AI technology"
+                      className={inputCls} />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Maps to <code className="bg-slate-100 px-1 rounded">?q=</code> in the Google News engine.
+                    </p>
+                  </Field>
+                ) : (
+                  <Field label="Search Query (blank = top headlines)">
+                    <input name="query" value={form.query} onChange={handleChange} placeholder="e.g. Korea technology" className={inputCls} />
+                  </Field>
+                )}
+
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="Country">
+                  <Field label={form.source_type === "serpapi" ? "Country (gl)" : "Country"}>
                     <input name="country" value={form.country} onChange={handleChange} placeholder="us" className={inputCls} />
                   </Field>
-                  <Field label="Language">
+                  <Field label={form.source_type === "serpapi" ? "Language (hl)" : "Language"}>
                     <input name="language" value={form.language} onChange={handleChange} placeholder="en" className={inputCls} />
                   </Field>
                 </div>

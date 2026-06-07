@@ -260,8 +260,8 @@ def create_source(
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    if body.source_type not in ("newsapi", "gnews", "rss"):
-        raise HTTPException(400, "source_type must be newsapi, gnews, or rss")
+    if body.source_type not in ("newsapi", "gnews", "rss", "serpapi"):
+        raise HTTPException(400, "source_type must be newsapi, gnews, rss, or serpapi")
     source = NewsSource(**body.model_dump())
     db.add(source)
     db.commit()

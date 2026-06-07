@@ -267,6 +267,72 @@ def archive_article(
     return archived
 
 
+# ── SerpAPI (Google News) ──────────────────────────────────────────────────
+
+_RELATIVE_DATE = re.compile(
+    r"(\d+)\s+(minute|hour|day|week|month)s?\s+ago", re.IGNORECASE
+)
+
+def _parse_serpapi_date(value: Optional[str]) -> Optional[datetime]:
+    """Parse SerpAPI date strings like '2 hours ago' or '1/4/2024, 2:00 PM, +0000 UTC'."""
+    if not value:
+        return None
+    m = _RELATIVE_DATE.match(value.strip())
+    if m:
+        n, unit = int(m.group(1)), m.group(2).lower()
+        delta = {
+            "minute": timedelta(minutes=n),
+            "hour":   timedelta(hours=n),
+            "day":    timedelta(days=n),
+            "week":   timedelta(weeks=n),
+            "month":  timedelta(days=n * 30),
+        }.get(unit, timedelta(0))
+        return datetime.utcnow() - delta
+    return _parse_dt(value)
+
+
+def fetch_serpapi(source: NewsSource) -> list[dict]:
+    if not source.api_key:
+        return []
+    params = {
+        "engine":  "google_news",
+        "api_key": source.api_key,
+        "q":       source.query or "top news",
+        "hl":      source.language or "en",
+        "gl":      source.country or "us",
+        "num":     30,
+    }
+    resp = requests.get("https://serpapi.com/search.json", params=params, timeout=20)
+    resp.raise_for_status()
+    data = resp.json()
+
+    out = []
+    for a in data.get("news_results", []):
+        link = a.get("link")
+        if not link:
+            continue
+        title = (a.get("title") or "").strip()
+        if not title:
+            continue
+        snippet = (a.get("snippet") or "").strip()
+        src_meta = a.get("source") or {}
+        source_name = src_meta.get("name") or source.name
+        authors = src_meta.get("authors") or []
+        author = authors[0] if authors else None
+        cat = source.category_override or categorize(title, snippet)
+        out.append({
+            "title":        title,
+            "url":          link,
+            "source_name":  source_name,
+            "category":     cat,
+            "summary":      snippet or None,
+            "image_url":    a.get("thumbnail"),
+            "author":       author,
+            "published_at": _parse_serpapi_date(a.get("date")),
+        })
+    return out
+
+
 # ── Scheduled jobs ─────────────────────────────────────────────────────────
 
 def run_fetch_cycle(db: Session) -> None:
@@ -279,6 +345,8 @@ def run_fetch_cycle(db: Session) -> None:
                 articles = fetch_gnews(source)
             elif source.source_type == "rss":
                 articles = fetch_rss(source)
+            elif source.source_type == "serpapi":
+                articles = fetch_serpapi(source)
             else:
                 continue
             count = save_articles(db, articles)
