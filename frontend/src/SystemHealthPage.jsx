@@ -8,18 +8,8 @@ import {
   AlertCircle,
 } from "lucide-react";
 
-// Get Version and Date from Environment Variables
-const getEnv = (key) => {
-  if (typeof import.meta !== "undefined" && import.meta.env) {
-    return import.meta.env[key];
-  }
-  return process.env[key];
-};
-
-const BUILD_VERSION =
-  getEnv("VITE_APP_VERSION") || getEnv("REACT_APP_VERSION") || "Dev-Local";
-const BUILD_DATE =
-  getEnv("VITE_APP_BUILD_DATE") || getEnv("REACT_APP_BUILD_DATE") || "Just Now";
+const BUILD_VERSION = import.meta.env.VITE_APP_VERSION ?? "Dev-Local";
+const BUILD_DATE = import.meta.env.VITE_APP_BUILD_DATE ?? "Just Now";
 
 const SystemHealthPage = () => {
   const [stats, setStats] = useState({
@@ -38,7 +28,10 @@ const SystemHealthPage = () => {
     // Defined INSIDE the effect to avoid dependency issues and linter warnings
     const fetchStats = async () => {
       try {
-        const response = await fetch("/api/system-stats");
+        const response = await fetch("/api/system-stats", {
+          credentials: "include",
+        });
+        if (!response.ok) return;
         const data = await response.json();
 
         // Alert Logic: Trigger if uptime is < 10 mins (600s) and has dropped compared to last check
@@ -156,7 +149,8 @@ const SystemHealthPage = () => {
   );
 };
 
-const StatCard = ({ icon: Icon, title, value, color }) => {
+const StatCard = ({ icon, title, value, color }) => {
+  const Icon = icon;
   const numericValue =
     typeof value === "number" ? value : parseFloat(value) || 0;
   return (
