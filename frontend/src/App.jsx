@@ -8,12 +8,14 @@ import {
   Menu,
   Settings,
   User,
+  UserCog,
   Users,
   X,
 } from "lucide-react";
 import { useAuth } from "./AuthContext";
 import LoginPage from "./LoginPage";
 import SystemHealthPage from "./SystemHealthPage";
+import UsersPage from "./UsersPage";
 
 const Navigation = ({
   currentPage,
@@ -61,9 +63,15 @@ const Navigation = ({
             >
               <button
                 onClick={() => { setCurrentPage("sys-health"); setIsSystemOpen(false); setMobileOpen(false); }}
-                className="text-left px-4 py-2 text-sm hover:bg-slate-50 flex items-center gap-2"
+                className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 flex items-center gap-2"
               >
                 <Activity className="w-4 h-4" /> System Health
+              </button>
+              <button
+                onClick={() => { setCurrentPage("users"); setIsSystemOpen(false); setMobileOpen(false); }}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 flex items-center gap-2"
+              >
+                <UserCog className="w-4 h-4" /> User Management
               </button>
             </div>
           )}
@@ -187,6 +195,9 @@ const App = () => {
   const renderContent = () => {
     if (currentPage === "sys-health" && user?.role === "admin") {
       return <SystemHealthPage />;
+    }
+    if (currentPage === "users" && user?.role === "admin") {
+      return <UsersPage />;
     }
     return (
       <section className="max-w-7xl mx-auto px-6 py-8 grid grid-cols-1 md:grid-cols-4 gap-8 text-left">

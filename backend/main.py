@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from auth_utils import hash_password
 from database import Base, SessionLocal, engine
 from models import User
-from routers import auth, health, system
+from routers import auth, health, system, users
 
 if os.path.exists("/host/proc"):
     os.environ["PROCFS_PATH"] = "/host/proc"
@@ -61,3 +61,4 @@ def _seed_admin() -> None:
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(system.router)
+app.include_router(users.router)
