@@ -2,6 +2,7 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from auth_utils import hash_password
 from database import Base, SessionLocal, engine
@@ -34,7 +35,29 @@ app.add_middleware(
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
+    _run_migrations()
     _seed_admin()
+
+
+def _run_migrations() -> None:
+    """Idempotent column additions — runs ALTER TABLE for any column that doesn't
+    exist yet.  Safe to call on every boot; errors per column are swallowed."""
+    new_columns = [
+        ("first_name",          "VARCHAR"),
+        ("last_name",           "VARCHAR"),
+        ("western_name",        "VARCHAR"),
+        ("birthday_lunar",      "DATE"),
+        ("is_lunar",            "BOOLEAN DEFAULT FALSE"),
+        ("country_code",        "VARCHAR(10)"),
+        ("phone_number",        "VARCHAR(20)"),
+        ("profile_picture_url", "TEXT"),
+    ]
+    with engine.begin() as conn:
+        for col, col_type in new_columns:
+            try:
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {col_type}"))
+            except Exception:
+                pass  # column already exists — safe to ignore
 
 
 def _seed_admin() -> None:

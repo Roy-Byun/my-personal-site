@@ -111,7 +111,11 @@ const Navigation = ({
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
                   {user.role === "admin" ? "Admin" : "Member"}
                 </p>
-                <p className="text-sm font-semibold">{user.full_name || user.username}</p>
+                <p className="text-sm font-semibold">
+                  {(user.last_name || user.first_name)
+                    ? `${user.last_name ?? ""}${user.first_name ?? ""}`.trim()
+                    : user.western_name || user.full_name || user.username}
+                </p>
               </div>
               <div className="w-10 h-10 rounded-full border-2 border-indigo-600 flex items-center justify-center bg-slate-100">
                 <User className="text-slate-500 w-5 h-5" />

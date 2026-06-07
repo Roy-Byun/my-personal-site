@@ -25,6 +25,10 @@ class UserOut(BaseModel):
     email: Optional[str]
     role: str
     full_name: Optional[str]
+    first_name: Optional[str]
+    last_name: Optional[str]
+    western_name: Optional[str]
+    profile_picture_url: Optional[str]
 
     model_config = {"from_attributes": True}
 

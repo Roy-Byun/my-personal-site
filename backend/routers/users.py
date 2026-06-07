@@ -12,21 +12,47 @@ from models import User
 router = APIRouter(prefix="/users", tags=["users"])
 
 
+# ── schemas ────────────────────────────────────────────────────────────────
+
 class UserCreate(BaseModel):
+    # account
     username: str
     password: str
     email: Optional[str] = None
     role: str = "user"
-    full_name: Optional[str] = None
+    # name
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    western_name: Optional[str] = None
+    # birthday
     birthday: Optional[date] = None
+    birthday_lunar: Optional[date] = None
+    is_lunar: bool = False
+    # contact
+    country_code: Optional[str] = None
+    phone_number: Optional[str] = None
+    # profile
+    profile_picture_url: Optional[str] = None
 
 
 class UserUpdate(BaseModel):
+    # account
     email: Optional[str] = None
     role: Optional[str] = None
-    full_name: Optional[str] = None
-    birthday: Optional[date] = None
     password: Optional[str] = None
+    # name
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    western_name: Optional[str] = None
+    # birthday
+    birthday: Optional[date] = None
+    birthday_lunar: Optional[date] = None
+    is_lunar: Optional[bool] = None
+    # contact
+    country_code: Optional[str] = None
+    phone_number: Optional[str] = None
+    # profile
+    profile_picture_url: Optional[str] = None
 
 
 class UserAdminOut(BaseModel):
@@ -34,12 +60,54 @@ class UserAdminOut(BaseModel):
     username: str
     email: Optional[str]
     role: str
-    full_name: Optional[str]
+    # name
+    first_name: Optional[str]
+    last_name: Optional[str]
+    western_name: Optional[str]
+    full_name: Optional[str]        # legacy seed field
+    # birthday
     birthday: Optional[date]
+    birthday_lunar: Optional[date]
+    is_lunar: Optional[bool]
+    # contact
+    country_code: Optional[str]
+    phone_number: Optional[str]
+    # profile
+    profile_picture_url: Optional[str]
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
+
+# ── helpers ────────────────────────────────────────────────────────────────
+
+def _apply_fields(user: User, body: UserCreate | UserUpdate) -> None:
+    """Write all non-None body fields onto the ORM object."""
+    string_fields = [
+        "email", "role",
+        "first_name", "last_name", "western_name",
+        "country_code", "phone_number", "profile_picture_url",
+    ]
+    date_fields = ["birthday", "birthday_lunar"]
+
+    for field in string_fields:
+        val = getattr(body, field, None)
+        if val is not None:
+            setattr(user, field, val or None)
+
+    for field in date_fields:
+        val = getattr(body, field, None)
+        if val is not None:
+            setattr(user, field, val)
+
+    if getattr(body, "is_lunar", None) is not None:
+        user.is_lunar = body.is_lunar
+
+    if getattr(body, "password", None):
+        user.hashed_password = hash_password(body.password)
+
+
+# ── endpoints ──────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[UserAdminOut])
 def list_users(
@@ -60,14 +128,8 @@ def create_user(
     if body.email and db.query(User).filter(User.email == body.email).first():
         raise HTTPException(status_code=400, detail="Email already in use")
 
-    user = User(
-        username=body.username,
-        hashed_password=hash_password(body.password),
-        email=body.email or None,
-        role=body.role,
-        full_name=body.full_name or None,
-        birthday=body.birthday,
-    )
+    user = User(username=body.username)
+    _apply_fields(user, body)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -86,20 +148,15 @@ def update_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     if body.email is not None:
-        conflict = db.query(User).filter(User.email == body.email, User.id != user_id).first()
+        conflict = (
+            db.query(User)
+            .filter(User.email == body.email, User.id != user_id)
+            .first()
+        )
         if conflict:
             raise HTTPException(status_code=400, detail="Email already in use")
-        user.email = body.email or None
 
-    if body.role is not None:
-        user.role = body.role
-    if body.full_name is not None:
-        user.full_name = body.full_name or None
-    if body.birthday is not None:
-        user.birthday = body.birthday
-    if body.password:
-        user.hashed_password = hash_password(body.password)
-
+    _apply_fields(user, body)
     db.commit()
     db.refresh(user)
     return user
