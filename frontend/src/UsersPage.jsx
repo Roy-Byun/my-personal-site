@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Pencil, Plus, Shield, Trash2, User, UserPlus, X } from "lucide-react";
+import CountryCodeSelect from "./CountryCodeSelect";
+import { COUNTRIES, flagEmoji } from "./countries";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -337,8 +339,11 @@ const UsersPage = () => {
       <SectionHeading>Contact</SectionHeading>
 
       <Field label="Country Code" half>
-        <input name="country_code" value={form.country_code} onChange={handleChange}
-          placeholder="+82" className={inputCls} />
+        <CountryCodeSelect
+          value={form.country_code}
+          onChange={handleChange}
+          name="country_code"
+        />
       </Field>
 
       <Field label="Phone Number" half>
@@ -419,6 +424,7 @@ const UsersPage = () => {
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Name</th>
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Username</th>
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden md:table-cell">Email</th>
+              <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden xl:table-cell">Phone</th>
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden sm:table-cell">Birthday / Age</th>
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Role</th>
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden lg:table-cell">Joined</th>
@@ -439,6 +445,25 @@ const UsersPage = () => {
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{u.username}</td>
                   <td className="px-4 py-3 text-slate-500 hidden md:table-cell">
                     {u.email || <span className="text-slate-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-slate-500 text-xs hidden xl:table-cell">
+                    {u.phone_number ? (
+                      <span className="flex items-center gap-1.5">
+                        {u.country_code && (() => {
+                          const c = COUNTRIES.find((x) => x.dial === u.country_code);
+                          return c ? (
+                            <span className="text-base leading-none" title={c.name}>
+                              {flagEmoji(c.iso)}
+                            </span>
+                          ) : (
+                            <span className="font-mono text-slate-400">{u.country_code}</span>
+                          );
+                        })()}
+                        <span>{u.phone_number}</span>
+                      </span>
+                    ) : (
+                      <span className="text-slate-300">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-slate-500 text-xs hidden sm:table-cell">
                     {u.birthday ? (
@@ -489,7 +514,7 @@ const UsersPage = () => {
 
             {users.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-6 py-16 text-center text-slate-400 text-sm">
+                <td colSpan={9} className="px-6 py-16 text-center text-slate-400 text-sm">
                   No users yet — create the first one.
                 </td>
               </tr>
