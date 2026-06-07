@@ -1,50 +1,56 @@
-import psutil
 import os
 import time
-from fastapi import APIRouter
 from datetime import datetime
-from sqlalchemy import create_engine, text
 
+import psutil
+from fastapi import APIRouter, Depends
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-if os.path.exists('/host/proc'):
-    os.environ['PROCFS_PATH'] = '/host/proc'
-    
+from auth_utils import require_admin
+from database import get_db
+from models import User
+
+if os.path.exists("/host/proc"):
+    os.environ["PROCFS_PATH"] = "/host/proc"
+
 router = APIRouter()
 
-# Initialize DB Engine
-DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
 
-def get_formatted_uptime(seconds):
-    days, rem = divmod(seconds, 86400)
+def _format_uptime(seconds: float) -> str:
+    days, rem = divmod(int(seconds), 86400)
     hours, rem = divmod(rem, 3600)
     minutes, _ = divmod(rem, 60)
-    
     parts = []
-    if days > 0: parts.append(f"{int(days)}d")
-    if hours > 0: parts.append(f"{int(hours)}h")
-    parts.append(f"{int(minutes)}m")
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    parts.append(f"{minutes}m")
     return ", ".join(parts)
 
-def get_db_status():
+
+def _db_status(db: Session) -> str:
     try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1"))
         return "Connected"
     except Exception:
         return "Disconnected"
 
+
 @router.get("/system-stats")
-def get_system_stats():
-    boot_timestamp = psutil.boot_time()
-    uptime_seconds = time.time() - boot_timestamp
-    
+def get_system_stats(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    boot_ts = psutil.boot_time()
+    uptime_seconds = time.time() - boot_ts
     return {
         "cpu_usage": psutil.cpu_percent(interval=0.1),
         "memory": psutil.virtual_memory().percent,
-        "disk": psutil.disk_usage('/').percent,
-        "uptime_formatted": get_formatted_uptime(uptime_seconds),
-        "boot_time": datetime.fromtimestamp(boot_timestamp).strftime('%Y-%m-%d %H:%M:%S'),
-        "raw_uptime": uptime_seconds, # Used for alert logic
-        "db_status": "Connected" # Placeholder for your existing DB check logic
+        "disk": psutil.disk_usage("/").percent,
+        "uptime_formatted": _format_uptime(uptime_seconds),
+        "boot_time": datetime.fromtimestamp(boot_ts).strftime("%Y-%m-%d %H:%M:%S"),
+        "raw_uptime": uptime_seconds,
+        "db_status": _db_status(db),
     }

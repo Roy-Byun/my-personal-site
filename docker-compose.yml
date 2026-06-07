@@ -27,17 +27,23 @@ services:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/myapp_db
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       - PROCFS_PATH=/host/proc
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - SECURE_COOKIES=true
+      - ADMIN_USERNAME=${ADMIN_USERNAME}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - ADMIN_FULL_NAME=${ADMIN_FULL_NAME}
+      - ALLOWED_ORIGINS=https://roika-server.hedgehog-heptatonic.ts.net
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 15s # Increased interval
-      timeout: 10s # Increased timeout
+      interval: 15s
+      timeout: 10s
       retries: 5
-      start_period: 20s # Added start period
+      start_period: 20s
     restart: always
     networks:
       - personal_network
@@ -45,13 +51,13 @@ services:
   db:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=myapp_db
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d myapp_db"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5

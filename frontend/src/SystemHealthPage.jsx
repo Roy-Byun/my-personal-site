@@ -8,8 +8,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 
-// Get Version and Date from Environment Variables (injected at build time)
-// Supports both Vite (import.meta.env) and Create-React-App (process.env)
+// Get Version and Date from Environment Variables
 const getEnv = (key) => {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return import.meta.env[key];
@@ -27,7 +26,7 @@ const SystemHealthPage = () => {
     cpu_usage: 0,
     memory: 0,
     disk: 0,
-    uptime_formatted: "Loading...", // Default state to prevent "Hours" flash
+    uptime_formatted: "Loading...",
     boot_time: "",
     db_status: "Checking...",
     raw_uptime: 0,
@@ -35,26 +34,32 @@ const SystemHealthPage = () => {
   const [showAlert, setShowAlert] = useState(false);
   const prevUptime = useRef(0);
 
-  const fetchStats = async () => {
-    try {
-      const response = await fetch("/api/system-stats");
-      const data = await response.json();
-
-      // Alert Logic: Trigger if uptime is < 10 mins and has reset
-      if (data.raw_uptime < 600 && prevUptime.current > data.raw_uptime) {
-        setShowAlert(true);
-      }
-      prevUptime.current = data.raw_uptime;
-
-      setStats(data);
-    } catch (error) {
-      console.error("Failed to fetch system stats:", error);
-    }
-  };
-
   useEffect(() => {
+    // Defined INSIDE the effect to avoid dependency issues and linter warnings
+    const fetchStats = async () => {
+      try {
+        const response = await fetch("/api/system-stats");
+        const data = await response.json();
+
+        // Alert Logic: Trigger if uptime is < 10 mins (600s) and has dropped compared to last check
+        if (data.raw_uptime < 600 && prevUptime.current > data.raw_uptime) {
+          setShowAlert(true);
+        }
+        prevUptime.current = data.raw_uptime;
+
+        setStats(data);
+      } catch (error) {
+        console.error("Failed to fetch system stats:", error);
+      }
+    };
+
+    // 1. Run immediately on load
     fetchStats();
+
+    // 2. Set interval to run every 3 seconds
     const interval = setInterval(fetchStats, 3000);
+
+    // 3. Cleanup on unmount
     return () => clearInterval(interval);
   }, []);
 

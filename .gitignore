@@ -22,3 +22,7 @@ build/
 
 # Docker
 .dockerignore
+
+# Database
+dev.db
+*.db
