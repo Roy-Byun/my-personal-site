@@ -1,5 +1,7 @@
+import logging
 import os
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -7,7 +9,11 @@ from sqlalchemy import text
 from auth_utils import hash_password
 from database import Base, SessionLocal, engine
 from models import User
+from news_fetcher import cleanup_old_articles, run_fetch_cycle
 from routers import auth, health, system, users
+from routers import news as news_router
+
+logging.basicConfig(level=logging.INFO)
 
 if os.path.exists("/host/proc"):
     os.environ["PROCFS_PATH"] = "/host/proc"
@@ -31,6 +37,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_scheduler = BackgroundScheduler(timezone="UTC")
+
+
+def _news_fetch_job() -> None:
+    db = SessionLocal()
+    try:
+        run_fetch_cycle(db)
+    finally:
+        db.close()
+
+
+def _news_cleanup_job() -> None:
+    db = SessionLocal()
+    try:
+        cleanup_old_articles(db)
+    finally:
+        db.close()
+
 
 @app.on_event("startup")
 def startup() -> None:
@@ -38,11 +62,18 @@ def startup() -> None:
     _run_migrations()
     _seed_admin()
 
+    _scheduler.add_job(_news_fetch_job, "interval", minutes=30, id="news_fetch", replace_existing=True)
+    _scheduler.add_job(_news_cleanup_job, "interval", hours=24, id="news_cleanup", replace_existing=True)
+    _scheduler.start()
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    _scheduler.shutdown(wait=False)
+
 
 def _run_migrations() -> None:
-    """Idempotent column additions — runs ALTER TABLE for any column that doesn't
-    exist yet.  Safe to call on every boot; errors per column are swallowed."""
-    new_columns = [
+    users_columns = [
         ("first_name",          "VARCHAR"),
         ("last_name",           "VARCHAR"),
         ("western_name",        "VARCHAR"),
@@ -53,11 +84,11 @@ def _run_migrations() -> None:
         ("profile_picture_url", "TEXT"),
     ]
     with engine.begin() as conn:
-        for col, col_type in new_columns:
+        for col, col_type in users_columns:
             try:
                 conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {col_type}"))
             except Exception:
-                pass  # column already exists — safe to ignore
+                pass
 
 
 def _seed_admin() -> None:
@@ -85,3 +116,4 @@ app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(system.router)
 app.include_router(users.router)
+app.include_router(news_router.router)

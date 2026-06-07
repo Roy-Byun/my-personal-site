@@ -6,6 +6,7 @@ import {
   LogIn,
   LogOut,
   Menu,
+  Newspaper,
   Settings,
   User,
   UserCog,
@@ -16,6 +17,8 @@ import { useAuth } from "./AuthContext";
 import LoginPage from "./LoginPage";
 import SystemHealthPage from "./SystemHealthPage";
 import UsersPage from "./UsersPage";
+import NewsSection from "./NewsSection";
+import NewsAdminPage from "./NewsAdminPage";
 
 const Navigation = ({
   currentPage,
@@ -72,6 +75,12 @@ const Navigation = ({
                 className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 flex items-center gap-2"
               >
                 <UserCog className="w-4 h-4" /> User Management
+              </button>
+              <button
+                onClick={() => { setCurrentPage("news-admin"); setIsSystemOpen(false); setMobileOpen(false); }}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 flex items-center gap-2"
+              >
+                <Newspaper className="w-4 h-4" /> News Management
               </button>
             </div>
           )}
@@ -203,28 +212,10 @@ const App = () => {
     if (currentPage === "users" && user?.role === "admin") {
       return <UsersPage />;
     }
-    return (
-      <section className="max-w-7xl mx-auto px-6 py-8 grid grid-cols-1 md:grid-cols-4 gap-8 text-left">
-        <aside className="col-span-1 space-y-6">
-          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-            <h3 className="font-bold text-slate-400 text-[10px] uppercase tracking-widest mb-4">
-              Dashboard
-            </h3>
-            <div className="p-3 bg-slate-50 rounded-lg border text-center">
-              <p className="text-[10px] font-bold text-slate-400">Status</p>
-              <p className="text-sm font-semibold text-emerald-600">Active Node</p>
-            </div>
-          </div>
-        </aside>
-
-        <article className="col-span-3 space-y-8">
-          <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm">
-            <h2 className="text-2xl font-bold text-slate-800 mb-6">Recent Activities</h2>
-            <p className="text-slate-500">Node metrics and activities go here.</p>
-          </div>
-        </article>
-      </section>
-    );
+    if (currentPage === "news-admin" && user?.role === "admin") {
+      return <NewsAdminPage />;
+    }
+    return <NewsSection />;
   };
 
   return (
