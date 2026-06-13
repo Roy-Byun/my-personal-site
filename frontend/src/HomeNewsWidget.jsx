@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { ArrowRight, RefreshCw } from "lucide-react";
 import { timeAgo } from "./NewsCard";
+import InfoTooltip from "./InfoTooltip";
 
 const CATEGORY_COLORS = {
   Politics:      "bg-red-100 text-red-700",
@@ -73,7 +74,10 @@ const HomeNewsWidget = ({ onViewAll }) => {
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-5 pt-5 pb-3 shrink-0">
-        <h3 className="font-bold text-slate-800">Latest News</h3>
+        <h3 className="font-bold text-slate-800 flex items-center">
+          Latest News
+          <InfoTooltip text="관리자가 추가한 소스에서 자동으로 수집한 최신 뉴스입니다. 30분마다 업데이트됩니다. (Automatically aggregated news from configured sources, updated every 30 minutes)" />
+        </h3>
         <div className="flex items-center gap-2">
           <button
             onClick={() => fetch_(category)}

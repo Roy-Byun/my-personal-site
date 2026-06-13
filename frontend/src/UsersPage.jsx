@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Pencil, Plus, Shield, Trash2, User, UserPlus, X } from "lucide-react";
+import { Ban, Copy, Link, Pencil, Plus, Shield, Trash2, User, UserPlus, X } from "lucide-react";
 import CountryCodeSelect from "./CountryCodeSelect";
 import { COUNTRIES, flagEmoji } from "./countries";
 
@@ -29,13 +29,9 @@ const initials = (u) => {
 };
 
 const RoleBadge = ({ role }) => (
-  <span
-    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest ${
-      role === "admin"
-        ? "bg-indigo-100 text-indigo-700"
-        : "bg-slate-100 text-slate-600"
-    }`}
-  >
+  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest ${
+    role === "admin" ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600"
+  }`}>
     {role === "admin" ? <Shield className="w-3 h-3" /> : <User className="w-3 h-3" />}
     {role}
   </span>
@@ -43,11 +39,8 @@ const RoleBadge = ({ role }) => (
 
 const Avatar = ({ u }) =>
   u.profile_picture_url ? (
-    <img
-      src={u.profile_picture_url}
-      alt={displayName(u)}
-      className="w-8 h-8 rounded-full object-cover border border-slate-200"
-    />
+    <img src={u.profile_picture_url} alt={displayName(u)}
+      className="w-8 h-8 rounded-full object-cover border border-slate-200" />
   ) : (
     <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-bold border border-indigo-200">
       {initials(u)}
@@ -70,9 +63,7 @@ const Modal = ({ title, onClose, children }) => (
 
 const Field = ({ label, children, half }) => (
   <div className={half ? "" : "col-span-2"}>
-    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
-      {label}
-    </label>
+    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{label}</label>
     {children}
   </div>
 );
@@ -83,44 +74,49 @@ const SectionHeading = ({ children }) => (
   </h4>
 );
 
-const inputCls =
-  "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500";
+const inputCls = "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500";
 
 const EMPTY_FORM = {
-  // account
-  username: "",
-  password: "",
-  email: "",
-  role: "user",
-  // name
-  first_name: "",
-  last_name: "",
-  western_name: "",
-  // birthday
-  birthday: "",
-  birthday_lunar: "",
-  is_lunar: false,
-  // contact
-  country_code: "",
-  phone_number: "",
-  // profile
-  profile_picture_url: "",
+  username: "", password: "", email: "", role: "user",
+  first_name: "", last_name: "", western_name: "",
+  birthday: "", birthday_lunar: "", is_lunar: false,
+  country_code: "", phone_number: "", profile_picture_url: "",
 };
+
+const SUSPEND_OPTIONS = [
+  { value: "1d",        label: "1 day" },
+  { value: "7d",        label: "7 days" },
+  { value: "30d",       label: "30 days" },
+  { value: "90d",       label: "90 days" },
+  { value: "365d",      label: "1 year" },
+  { value: "permanent", label: "Permanent ban" },
+];
 
 // ── main component ─────────────────────────────────────────────────────────
 
 const UsersPage = () => {
-  const [users, setUsers] = useState([]);
+  const [users, setUsers]             = useState([]);
   const [pageLoading, setPageLoading] = useState(true);
-  const [pageError, setPageError] = useState("");
+  const [pageError, setPageError]     = useState("");
 
-  const [modal, setModal] = useState(null); // "create" | "edit"
+  const [modal, setModal]           = useState(null); // "create"|"edit"|"suspend"|"invite"
   const [editTarget, setEditTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
-  const [form, setForm] = useState(EMPTY_FORM);
+  const [form, setForm]           = useState(EMPTY_FORM);
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Suspend modal state
+  const [suspendTarget, setSuspendTarget]   = useState(null);
+  const [suspendDuration, setSuspendDuration] = useState("7d");
+  const [suspendReason, setSuspendReason]   = useState("");
+
+  // Invite modal state
+  const [inviteUrl, setInviteUrl]       = useState("");
+  const [inviteDays, setInviteDays]     = useState(7);
+  const [inviteNote, setInviteNote]     = useState("");
+  const [inviteCopied, setInviteCopied] = useState(false);
 
   // ── data fetching ──────────────────────────────────────────────────────
 
@@ -140,34 +136,28 @@ const UsersPage = () => {
 
   // ── modal helpers ──────────────────────────────────────────────────────
 
-  const openCreate = () => {
-    setForm(EMPTY_FORM);
-    setFormError("");
-    setModal("create");
-  };
-
+  const openCreate = () => { setForm(EMPTY_FORM); setFormError(""); setModal("create"); };
   const openEdit = (u) => {
     setEditTarget(u);
     setForm({
-      username: u.username,
-      password: "",
-      email: u.email ?? "",
-      role: u.role,
-      first_name: u.first_name ?? "",
-      last_name: u.last_name ?? "",
-      western_name: u.western_name ?? "",
-      birthday: u.birthday ?? "",
-      birthday_lunar: u.birthday_lunar ?? "",
-      is_lunar: u.is_lunar ?? false,
-      country_code: u.country_code ?? "",
-      phone_number: u.phone_number ?? "",
+      username: u.username, password: "", email: u.email ?? "", role: u.role,
+      first_name: u.first_name ?? "", last_name: u.last_name ?? "",
+      western_name: u.western_name ?? "", birthday: u.birthday ?? "",
+      birthday_lunar: u.birthday_lunar ?? "", is_lunar: u.is_lunar ?? false,
+      country_code: u.country_code ?? "", phone_number: u.phone_number ?? "",
       profile_picture_url: u.profile_picture_url ?? "",
     });
-    setFormError("");
-    setModal("edit");
+    setFormError(""); setModal("edit");
+  };
+  const closeModal = () => { setModal(null); setEditTarget(null); setFormError(""); };
+
+  const openSuspend = (u) => {
+    setSuspendTarget(u); setSuspendDuration("7d"); setSuspendReason(""); setModal("suspend");
   };
 
-  const closeModal = () => { setModal(null); setEditTarget(null); setFormError(""); };
+  const openInvite = () => {
+    setInviteUrl(""); setInviteDays(7); setInviteNote(""); setInviteCopied(false); setModal("invite");
+  };
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
@@ -178,105 +168,109 @@ const UsersPage = () => {
 
   const buildPayload = (isCreate) => {
     const p = {
-      email: form.email || null,
-      role: form.role,
-      first_name: form.first_name || null,
-      last_name: form.last_name || null,
-      western_name: form.western_name || null,
-      birthday: form.birthday || null,
-      birthday_lunar: form.birthday_lunar || null,
-      is_lunar: form.is_lunar,
-      country_code: form.country_code || null,
-      phone_number: form.phone_number || null,
+      email: form.email || null, role: form.role,
+      first_name: form.first_name || null, last_name: form.last_name || null,
+      western_name: form.western_name || null, birthday: form.birthday || null,
+      birthday_lunar: form.birthday_lunar || null, is_lunar: form.is_lunar,
+      country_code: form.country_code || null, phone_number: form.phone_number || null,
       profile_picture_url: form.profile_picture_url || null,
     };
-    if (isCreate) {
-      p.username = form.username;
-      p.password = form.password;
-    } else if (form.password) {
-      p.password = form.password;
-    }
+    if (isCreate) { p.username = form.username; p.password = form.password; }
+    else if (form.password) { p.password = form.password; }
     return p;
   };
 
   // ── CRUD ───────────────────────────────────────────────────────────────
 
   const handleCreate = async (e) => {
-    e.preventDefault();
-    setFormError("");
-    setSubmitting(true);
+    e.preventDefault(); setFormError(""); setSubmitting(true);
     try {
       const res = await fetch("/api/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(buildPayload(true)),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        credentials: "include", body: JSON.stringify(buildPayload(true)),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail ?? "Failed to create user");
-      }
-      await fetchUsers();
-      closeModal();
-    } catch (e) {
-      setFormError(e.message);
-    } finally {
-      setSubmitting(false);
-    }
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Failed to create user");
+      await fetchUsers(); closeModal();
+    } catch (e) { setFormError(e.message); }
+    finally { setSubmitting(false); }
   };
 
   const handleUpdate = async (e) => {
-    e.preventDefault();
-    setFormError("");
-    setSubmitting(true);
+    e.preventDefault(); setFormError(""); setSubmitting(true);
     try {
       const res = await fetch(`/api/users/${editTarget.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(buildPayload(false)),
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        credentials: "include", body: JSON.stringify(buildPayload(false)),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail ?? "Failed to update user");
-      }
-      await fetchUsers();
-      closeModal();
-    } catch (e) {
-      setFormError(e.message);
-    } finally {
-      setSubmitting(false);
-    }
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Failed to update user");
+      await fetchUsers(); closeModal();
+    } catch (e) { setFormError(e.message); }
+    finally { setSubmitting(false); }
   };
 
   const handleDelete = async (userId) => {
     try {
-      const res = await fetch(`/api/users/${userId}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail ?? "Failed to delete user");
-      }
-      setDeleteTarget(null);
-      await fetchUsers();
-    } catch (e) {
-      setPageError(e.message);
+      const res = await fetch(`/api/users/${userId}`, { method: "DELETE", credentials: "include" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Failed to delete user");
+      setDeleteTarget(null); await fetchUsers();
+    } catch (e) { setPageError(e.message); }
+  };
+
+  const handleSuspend = async () => {
+    const res = await fetch(`/api/users/${suspendTarget.id}/suspend`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ duration: suspendDuration, reason: suspendReason || null }),
+    });
+    if (res.ok) { closeModal(); await fetchUsers(); }
+  };
+
+  const handleUnsuspend = async (userId) => {
+    const res = await fetch(`/api/users/${userId}/unsuspend`, { method: "POST", credentials: "include" });
+    if (res.ok) await fetchUsers();
+  };
+
+  const handleReactivate = async (userId) => {
+    const res = await fetch(`/api/users/${userId}/reactivate`, { method: "POST", credentials: "include" });
+    if (res.ok) await fetchUsers();
+  };
+
+  const handleGenerateInvite = async () => {
+    const res = await fetch("/api/invites", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ expires_days: inviteDays, note: inviteNote || null }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const origin = window.location.origin;
+      setInviteUrl(`${origin}/?invite=${data.token}`);
     }
+  };
+
+  const copyInvite = () => {
+    navigator.clipboard.writeText(inviteUrl);
+    setInviteCopied(true);
+    setTimeout(() => setInviteCopied(false), 2000);
   };
 
   // ── form body ──────────────────────────────────────────────────────────
 
   const formBody = (isCreate) => (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-      {/* Account */}
       <SectionHeading>Account</SectionHeading>
 
-      {isCreate && (
-        <Field label="Username *" half>
+      {isCreate ? (
+        <Field label="Username * (변경 불가)" half>
           <input name="username" value={form.username} onChange={handleChange}
-            required autoComplete="off" className={inputCls} />
+            required autoComplete="off" pattern="[a-zA-Z0-9._\-@]{3,30}"
+            title="3-30자, 영문/숫자/. _ - @ 만 허용"
+            className={inputCls} />
+        </Field>
+      ) : (
+        <Field label="Username (변경 불가)" half>
+          <input value={editTarget?.username} disabled
+            className={`${inputCls} bg-gray-50 text-gray-400 cursor-not-allowed`} />
         </Field>
       )}
 
@@ -296,62 +290,44 @@ const UsersPage = () => {
         </select>
       </Field>
 
-      {/* Name */}
       <SectionHeading>Name</SectionHeading>
 
       <Field label="성 (Last Name)" half>
         <input name="last_name" value={form.last_name} onChange={handleChange} className={inputCls} />
       </Field>
-
       <Field label="이름 (First Name)" half>
         <input name="first_name" value={form.first_name} onChange={handleChange} className={inputCls} />
       </Field>
-
       <Field label="영어이름 (Western Name)" half>
         <input name="western_name" value={form.western_name} onChange={handleChange}
           placeholder="e.g. Roy" className={inputCls} />
       </Field>
 
-      {/* Birthday */}
       <SectionHeading>Birthday</SectionHeading>
 
       <Field label="양력 (Solar Birthday)" half>
         <input type="date" name="birthday" value={form.birthday} onChange={handleChange} className={inputCls} />
       </Field>
-
       <Field label="음력 (Lunar Birthday)" half>
-        <input type="date" name="birthday_lunar" value={form.birthday_lunar} onChange={handleChange}
-          className={inputCls} />
+        <input type="date" name="birthday_lunar" value={form.birthday_lunar} onChange={handleChange} className={inputCls} />
       </Field>
-
       <div className="col-span-2 flex items-center gap-2">
         <input type="checkbox" id="is_lunar" name="is_lunar" checked={form.is_lunar}
           onChange={handleChange} className="accent-indigo-600 w-4 h-4" />
         <label htmlFor="is_lunar" className="text-xs text-slate-600">Primary birthday is lunar</label>
-        {form.birthday && (
-          <span className="ml-auto text-xs text-slate-400">
-            Age: {calcAge(form.birthday)}
-          </span>
-        )}
+        {form.birthday && <span className="ml-auto text-xs text-slate-400">Age: {calcAge(form.birthday)}</span>}
       </div>
 
-      {/* Contact */}
       <SectionHeading>Contact</SectionHeading>
 
       <Field label="Country Code" half>
-        <CountryCodeSelect
-          value={form.country_code}
-          onChange={handleChange}
-          name="country_code"
-        />
+        <CountryCodeSelect value={form.country_code} onChange={handleChange} name="country_code" />
       </Field>
-
       <Field label="Phone Number" half>
         <input name="phone_number" value={form.phone_number} onChange={handleChange}
           placeholder="10-1234-5678" className={inputCls} />
       </Field>
 
-      {/* Profile */}
       <SectionHeading>Profile</SectionHeading>
 
       <Field label="Profile Picture URL">
@@ -359,7 +335,6 @@ const UsersPage = () => {
           placeholder="https://..." className={inputCls} />
       </Field>
 
-      {/* Error + submit */}
       {formError && (
         <p className="col-span-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
           {formError}
@@ -368,16 +343,12 @@ const UsersPage = () => {
 
       <div className="col-span-2 flex gap-3 pt-2">
         <button type="submit" disabled={submitting}
-          className="flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-60 flex items-center justify-center gap-2 transition-colors"
-        >
+          className="flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-60 flex items-center justify-center gap-2 transition-colors">
           <Plus className="w-4 h-4" />
-          {submitting
-            ? isCreate ? "Creating…" : "Saving…"
-            : isCreate ? "Create User" : "Save Changes"}
+          {submitting ? (isCreate ? "Creating…" : "Saving…") : (isCreate ? "Create User" : "Save Changes")}
         </button>
         <button type="button" onClick={closeModal}
-          className="px-4 py-2 text-sm text-slate-500 border rounded-lg hover:bg-slate-50"
-        >
+          className="px-4 py-2 text-sm text-slate-500 border rounded-lg hover:bg-slate-50">
           Cancel
         </button>
       </div>
@@ -399,21 +370,22 @@ const UsersPage = () => {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">User Management</h2>
-          <p className="text-sm text-slate-400 mt-1">
-            {users.length} member{users.length !== 1 ? "s" : ""}
-          </p>
+          <p className="text-sm text-slate-400 mt-1">{users.length} member{users.length !== 1 ? "s" : ""}</p>
         </div>
-        <button onClick={openCreate}
-          className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 flex items-center gap-2 transition-colors"
-        >
-          <UserPlus className="w-4 h-4" /> New User
-        </button>
+        <div className="flex gap-2">
+          <button onClick={openInvite}
+            className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-emerald-700 flex items-center gap-2 transition-colors">
+            <Link className="w-4 h-4" /> Invite Link
+          </button>
+          <button onClick={openCreate}
+            className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 flex items-center gap-2 transition-colors">
+            <UserPlus className="w-4 h-4" /> New User
+          </button>
+        </div>
       </div>
 
       {pageError && (
-        <p className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-          {pageError}
-        </p>
+        <p className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{pageError}</p>
       )}
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
@@ -424,97 +396,95 @@ const UsersPage = () => {
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Name</th>
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Username</th>
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden md:table-cell">Email</th>
-              <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden xl:table-cell">Phone</th>
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden sm:table-cell">Birthday / Age</th>
               <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Role</th>
-              <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden lg:table-cell">Joined</th>
+              <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden lg:table-cell">Status</th>
               <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {users.map((u) => {
               const age = calcAge(u.birthday);
+              const isSuspended = u.is_suspended;
+              const isInactive = u.is_active === false;
               return (
-                <tr key={u.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-4 py-3">
-                    <Avatar u={u} />
-                  </td>
-                  <td className="px-4 py-3 font-semibold text-slate-800">
-                    {displayName(u)}
-                  </td>
+                <tr key={u.id} className={`transition-colors ${isSuspended || isInactive ? "bg-red-50/30" : "hover:bg-slate-50"}`}>
+                  <td className="px-4 py-3"><Avatar u={u} /></td>
+                  <td className="px-4 py-3 font-semibold text-slate-800">{displayName(u)}</td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{u.username}</td>
                   <td className="px-4 py-3 text-slate-500 hidden md:table-cell">
                     {u.email || <span className="text-slate-300 text-xs">—</span>}
-                  </td>
-                  <td className="px-4 py-3 text-slate-500 text-xs hidden xl:table-cell">
-                    {u.phone_number ? (
-                      <span className="flex items-center gap-1.5">
-                        {u.country_code && (() => {
-                          const c = COUNTRIES.find((x) => x.dial === u.country_code);
-                          return c ? (
-                            <span className="text-base leading-none" title={c.name}>
-                              {flagEmoji(c.iso)}
-                            </span>
-                          ) : (
-                            <span className="font-mono text-slate-400">{u.country_code}</span>
-                          );
-                        })()}
-                        <span>{u.phone_number}</span>
-                      </span>
-                    ) : (
-                      <span className="text-slate-300">—</span>
-                    )}
                   </td>
                   <td className="px-4 py-3 text-slate-500 text-xs hidden sm:table-cell">
                     {u.birthday ? (
                       <span>
                         {u.birthday}
-                        {age !== null && (
-                          <span className="ml-1 text-indigo-500 font-semibold">({age}세)</span>
-                        )}
-                        {u.is_lunar && (
-                          <span className="ml-1 text-slate-400">[음]</span>
-                        )}
+                        {age !== null && <span className="ml-1 text-indigo-500 font-semibold">({age}세)</span>}
+                        {u.is_lunar && <span className="ml-1 text-slate-400">[음]</span>}
                       </span>
-                    ) : (
-                      <span className="text-slate-300">—</span>
-                    )}
+                    ) : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="px-4 py-3"><RoleBadge role={u.role} /></td>
-                  <td className="px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">
-                    {new Date(u.created_at).toLocaleDateString()}
+                  <td className="px-4 py-3 text-xs hidden lg:table-cell">
+                    {isInactive ? (
+                      <span className="text-gray-400 font-medium">Deactivated</span>
+                    ) : isSuspended ? (
+                      <span className="text-red-500 font-medium">
+                        Suspended{u.suspended_until ? ` until ${new Date(u.suspended_until).toLocaleDateString()}` : " (perm)"}
+                      </span>
+                    ) : (
+                      <span className="text-green-600 font-medium">Active</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     {deleteTarget === u.id ? (
                       <div className="flex items-center gap-2 justify-end">
                         <span className="text-xs text-red-600 font-medium">Delete?</span>
                         <button onClick={() => handleDelete(u.id)}
-                          className="text-xs text-white bg-red-500 hover:bg-red-600 px-2 py-1 rounded font-bold transition-colors"
-                        >Yes</button>
+                          className="text-xs text-white bg-red-500 hover:bg-red-600 px-2 py-1 rounded font-bold">Yes</button>
                         <button onClick={() => setDeleteTarget(null)}
-                          className="text-xs text-slate-500 hover:text-slate-700 px-2 py-1 rounded border transition-colors"
-                        >No</button>
+                          className="text-xs text-slate-500 hover:text-slate-700 px-2 py-1 rounded border">No</button>
                       </div>
                     ) : (
                       <div className="flex items-center gap-1 justify-end">
                         <button onClick={() => openEdit(u)}
-                          className="text-slate-400 hover:text-indigo-600 transition-colors p-1.5 rounded hover:bg-indigo-50"
-                          title="Edit"
-                        ><Pencil className="w-4 h-4" /></button>
+                          className="text-slate-400 hover:text-indigo-600 p-1.5 rounded hover:bg-indigo-50" title="Edit">
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        {u.role !== "admin" && (
+                          isSuspended ? (
+                            <button onClick={() => handleUnsuspend(u.id)}
+                              className="text-orange-400 hover:text-orange-600 p-1.5 rounded hover:bg-orange-50 text-[10px] font-bold"
+                              title="Lift suspension">
+                              Unsuspend
+                            </button>
+                          ) : (
+                            <button onClick={() => openSuspend(u)}
+                              className="text-slate-400 hover:text-orange-500 p-1.5 rounded hover:bg-orange-50" title="Suspend">
+                              <Ban className="w-4 h-4" />
+                            </button>
+                          )
+                        )}
+                        {isInactive && (
+                          <button onClick={() => handleReactivate(u.id)}
+                            className="text-slate-400 hover:text-green-600 p-1.5 rounded hover:bg-green-50 text-[10px] font-bold"
+                            title="Reactivate account">
+                            Reactivate
+                          </button>
+                        )}
                         <button onClick={() => setDeleteTarget(u.id)}
-                          className="text-slate-400 hover:text-red-500 transition-colors p-1.5 rounded hover:bg-red-50"
-                          title="Delete"
-                        ><Trash2 className="w-4 h-4" /></button>
+                          className="text-slate-400 hover:text-red-500 p-1.5 rounded hover:bg-red-50" title="Delete">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     )}
                   </td>
                 </tr>
               );
             })}
-
             {users.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-6 py-16 text-center text-slate-400 text-sm">
+                <td colSpan={8} className="px-6 py-16 text-center text-slate-400 text-sm">
                   No users yet — create the first one.
                 </td>
               </tr>
@@ -523,15 +493,82 @@ const UsersPage = () => {
         </table>
       </div>
 
+      {/* Create/Edit modals */}
       {modal === "create" && (
         <Modal title="New User" onClose={closeModal}>
           <form onSubmit={handleCreate}>{formBody(true)}</form>
         </Modal>
       )}
-
       {modal === "edit" && editTarget && (
         <Modal title={`Edit — ${editTarget.username}`} onClose={closeModal}>
           <form onSubmit={handleUpdate}>{formBody(false)}</form>
+        </Modal>
+      )}
+
+      {/* Suspend modal */}
+      {modal === "suspend" && suspendTarget && (
+        <Modal title={`Suspend — ${displayName(suspendTarget)}`} onClose={closeModal}>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 mb-1">Duration</label>
+              <select value={suspendDuration} onChange={e => setSuspendDuration(e.target.value)} className={inputCls}>
+                {SUSPEND_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-500 mb-1">Reason (optional)</label>
+              <input value={suspendReason} onChange={e => setSuspendReason(e.target.value)}
+                placeholder="Reason for suspension…" className={inputCls} />
+            </div>
+            <div className="flex gap-3 pt-1">
+              <button onClick={handleSuspend}
+                className="flex-1 bg-orange-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-orange-700 transition-colors">
+                Confirm Suspend
+              </button>
+              <button onClick={closeModal} className="px-4 text-sm text-slate-500 border rounded-lg hover:bg-slate-50">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Invite modal */}
+      {modal === "invite" && (
+        <Modal title="Generate Invite Link" onClose={closeModal}>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-500">
+              Send this link to a new family member. They can register using it (admin role is not available on self-registration).
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">Expires in (days)</label>
+                <input type="number" min={1} max={90} value={inviteDays}
+                  onChange={e => setInviteDays(Number(e.target.value))} className={inputCls} />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">Note (optional)</label>
+                <input value={inviteNote} onChange={e => setInviteNote(e.target.value)}
+                  placeholder="e.g. For: Roy" className={inputCls} />
+              </div>
+            </div>
+            <button onClick={handleGenerateInvite}
+              className="w-full bg-emerald-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2">
+              <Link className="w-4 h-4" /> Generate Link
+            </button>
+            {inviteUrl && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 bg-slate-50 border rounded-lg px-3 py-2">
+                  <span className="flex-1 text-xs font-mono text-slate-700 break-all">{inviteUrl}</span>
+                  <button onClick={copyInvite}
+                    className={`shrink-0 p-1.5 rounded ${inviteCopied ? "text-green-600" : "text-slate-400 hover:text-indigo-600"}`}>
+                    <Copy className="w-4 h-4" />
+                  </button>
+                </div>
+                {inviteCopied && <p className="text-xs text-green-600 font-medium">Copied to clipboard!</p>}
+              </div>
+            )}
+          </div>
         </Modal>
       )}
     </div>

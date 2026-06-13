@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CalendarDays, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { useAuth } from "./AuthContext";
+import InfoTooltip from "./InfoTooltip";
 
 const inputCls = "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500";
 
@@ -153,7 +154,10 @@ const FamilyCalendarWidget = () => {
       <div className="flex items-center justify-between px-5 pt-5 pb-4 shrink-0">
         <div className="flex items-center gap-2">
           <CalendarDays className="w-4 h-4 text-indigo-500" />
-          <h3 className="font-bold text-slate-800">Upcoming</h3>
+          <h3 className="font-bold text-slate-800 flex items-center">
+            Upcoming
+            <InfoTooltip text="다음 30일 내 가족 일정과 생일을 보여줍니다. .ics 파일로 일정을 가져올 수도 있어요. (Shows family events and birthdays in the next 30 days. You can also import .ics calendar files)" />
+          </h3>
         </div>
         {user && (
           <div className="flex items-center gap-1">

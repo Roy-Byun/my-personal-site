@@ -12,7 +12,7 @@ from models import User
 from news_fetcher import cleanup_old_articles, run_fetch_cycle
 from routers import auth, health, system, users
 from routers import news as news_router
-from routers import announcements, events, posts
+from routers import announcements, events, invites, posts
 
 logging.basicConfig(level=logging.INFO)
 
@@ -90,6 +90,12 @@ def _run_migrations() -> None:
         ("family_events", "recurrence_type",     "VARCHAR(20)"),
         ("family_events", "recurrence_interval", "INTEGER DEFAULT 1"),
         ("family_events", "recurrence_end",      "DATE"),
+        # Account status columns
+        ("users", "is_active",          "BOOLEAN DEFAULT TRUE"),
+        ("users", "deactivated_at",     "TIMESTAMP"),
+        ("users", "is_suspended",       "BOOLEAN DEFAULT FALSE"),
+        ("users", "suspended_until",    "TIMESTAMP"),
+        ("users", "suspension_reason",  "VARCHAR"),
     ]
     for table, col, col_type in migrations:
         try:
@@ -124,6 +130,7 @@ app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(system.router)
 app.include_router(users.router)
+app.include_router(invites.router)
 app.include_router(news_router.router)
 app.include_router(announcements.router)
 app.include_router(events.router)

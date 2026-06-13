@@ -1,4 +1,5 @@
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,6 +7,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from auth_utils import get_current_user, hash_password, require_admin
+
+_USERNAME_RE = re.compile(r'^[a-zA-Z0-9._\-@]{3,30}$')
+
+SUSPEND_DURATIONS = {
+    "1d": 1, "7d": 7, "30d": 30, "90d": 90, "365d": 365, "permanent": None,
+}
 from database import get_db
 from models import User
 
@@ -152,6 +159,8 @@ def create_user(
     if body.email and db.query(User).filter(User.email == body.email).first():
         raise HTTPException(status_code=400, detail="Email already in use")
 
+    if not _USERNAME_RE.match(body.username):
+        raise HTTPException(400, "Username: 3-30 characters, letters/numbers and . _ - @ only.")
     user = User(username=body.username)
     _apply_fields(user, body)
     db.add(user)
@@ -184,6 +193,66 @@ def update_user(
     db.commit()
     db.refresh(user)
     return user
+
+
+class SuspendRequest(BaseModel):
+    duration: str = "7d"   # "1d"|"7d"|"30d"|"90d"|"365d"|"permanent"
+    reason: Optional[str] = None
+
+
+@router.post("/{user_id}/suspend", status_code=200)
+def suspend_user(
+    user_id: int,
+    body: SuspendRequest,
+    current_admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.role == "admin":
+        raise HTTPException(403, "Cannot suspend another admin")
+    if current_admin.id == user_id:
+        raise HTTPException(403, "Cannot suspend yourself")
+    if body.duration not in SUSPEND_DURATIONS:
+        raise HTTPException(400, f"Invalid duration. Choose from: {', '.join(SUSPEND_DURATIONS)}")
+    days = SUSPEND_DURATIONS[body.duration]
+    user.is_suspended = True
+    user.suspended_until = datetime.utcnow() + timedelta(days=days) if days else None
+    user.suspension_reason = body.reason
+    db.commit()
+    return {"detail": f"User suspended for {body.duration}"}
+
+
+@router.post("/{user_id}/unsuspend", status_code=200)
+def unsuspend_user(
+    user_id: int,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.is_suspended = False
+    user.suspended_until = None
+    user.suspension_reason = None
+    db.commit()
+    return {"detail": "Suspension lifted"}
+
+
+@router.post("/{user_id}/reactivate", status_code=200)
+def reactivate_user(
+    user_id: int,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.is_active = True
+    user.deactivated_at = None
+    db.commit()
+    return {"detail": "Account reactivated"}
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

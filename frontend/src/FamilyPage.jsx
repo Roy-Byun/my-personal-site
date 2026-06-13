@@ -2,6 +2,9 @@ import React, { useEffect, useState } from "react";
 import { Camera, Gift, MessageSquare, UtensilsCrossed, Users } from "lucide-react";
 import { useAuth } from "./AuthContext";
 import { flagEmoji } from "./countries";
+import FamilyPostsWidget from "./FamilyPostsWidget";
+import InfoTooltip from "./InfoTooltip";
+import { useT } from "./i18n";
 
 const calcAge = (bdayStr) => {
   if (!bdayStr) return null;
@@ -106,8 +109,9 @@ const ComingSoon = ({ icon: Icon, title, desc }) => (
   </div>
 );
 
-const FamilyPage = () => {
+const FamilyPage = ({ setCurrentPage }) => {
   const { user } = useAuth();
+  const { t } = useT();
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -126,7 +130,10 @@ const FamilyPage = () => {
       <div className="mb-10">
         <div className="flex items-center gap-3 mb-6">
           <Users className="w-5 h-5 text-indigo-500" />
-          <h2 className="text-xl font-bold text-slate-800">Family Members</h2>
+          <h2 className="text-xl font-bold text-slate-800">
+            {t("Family Members")}
+            <InfoTooltip text="가족 구성원 목록입니다. 로그인한 가족만 볼 수 있어요. (Visible to logged-in family members only)" />
+          </h2>
           <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{members.length} members</span>
         </div>
 
@@ -141,6 +148,11 @@ const FamilyPage = () => {
             {members.map((m) => <MemberCard key={m.id} u={m} />)}
           </div>
         )}
+      </div>
+
+      {/* Family News full widget */}
+      <div className="mb-10">
+        <FamilyPostsWidget />
       </div>
 
       {/* Coming-soon features */}

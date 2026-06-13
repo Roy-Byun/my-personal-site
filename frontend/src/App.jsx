@@ -3,6 +3,7 @@ import {
   Activity,
   Briefcase,
   ChevronDown,
+  Globe,
   LogIn,
   LogOut,
   Menu,
@@ -14,7 +15,10 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "./AuthContext";
+import { LangProvider, useT } from "./i18n";
 import LoginPage from "./LoginPage";
+import RegisterPage from "./RegisterPage";
+import ProfilePage from "./ProfilePage";
 import SystemHealthPage from "./SystemHealthPage";
 import UsersPage from "./UsersPage";
 import NewsSection from "./NewsSection";
@@ -22,6 +26,20 @@ import NewsAdminPage from "./NewsAdminPage";
 import HomePage from "./HomePage";
 import FamilyPage from "./FamilyPage";
 import ProjectsPage from "./ProjectsPage";
+
+function LangToggle() {
+  const { lang, setLang } = useT();
+  return (
+    <button
+      onClick={() => setLang(lang === "en" ? "ko" : "en")}
+      className="flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-indigo-600 transition-colors border rounded px-2 py-1"
+      title={lang === "en" ? "한국어로 전환" : "Switch to English"}
+    >
+      <Globe className="w-3 h-3" />
+      {lang === "en" ? "한국어" : "English"}
+    </button>
+  );
+}
 
 const Navigation = ({
   currentPage,
@@ -33,6 +51,7 @@ const Navigation = ({
   setMobileOpen,
 }) => {
   const { user, logout } = useAuth();
+  const { t } = useT();
   const isAdmin = user?.role === "admin";
 
   const navLinks = (isMobile = false) => (
@@ -41,13 +60,13 @@ const Navigation = ({
         onClick={() => { setCurrentPage("projects"); setMobileOpen(false); }}
         className={`hover:text-indigo-600 flex items-center gap-1 ${isMobile ? "w-full py-2" : ""}`}
       >
-        <Briefcase className="w-4 h-4" /> Projects
+        <Briefcase className="w-4 h-4" /> {t("Projects")}
       </button>
       <button
         onClick={() => { setCurrentPage("family"); setMobileOpen(false); }}
         className={`hover:text-indigo-600 flex items-center gap-1 ${isMobile ? "w-full py-2" : ""}`}
       >
-        <Users className="w-4 h-4" /> Family
+        <Users className="w-4 h-4" /> {t("Family")}
       </button>
 
       {user && isAdmin && (
@@ -108,20 +127,22 @@ const Navigation = ({
           </div>
         </div>
 
-        {/* Right: user area + hamburger */}
+        {/* Right: lang toggle + user area + hamburger */}
         <div className="flex items-center gap-3">
+          <LangToggle />
+
           {!user ? (
             <button
               onClick={() => setCurrentPage("login")}
               className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 flex items-center gap-2 transition-colors"
             >
-              <LogIn className="w-4 h-4" /> Login
+              <LogIn className="w-4 h-4" /> {t("Login")}
             </button>
           ) : (
             <div className="flex items-center gap-3">
               <div className="text-right hidden sm:block">
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-                  {user.role === "admin" ? "Admin" : "Member"}
+                  {t(user.role === "admin" ? "admin" : "user")}
                 </p>
                 <p className="text-sm font-semibold">
                   {(user.last_name || user.first_name)
@@ -129,13 +150,17 @@ const Navigation = ({
                     : user.western_name || user.full_name || user.username}
                 </p>
               </div>
-              <div className="w-10 h-10 rounded-full border-2 border-indigo-600 flex items-center justify-center bg-slate-100">
+              <button
+                onClick={() => setCurrentPage("profile")}
+                className="w-10 h-10 rounded-full border-2 border-indigo-600 flex items-center justify-center bg-slate-100 hover:bg-indigo-50 transition-colors"
+                title={t("My Profile")}
+              >
                 <User className="text-slate-500 w-5 h-5" />
-              </div>
+              </button>
               <button
                 onClick={logout}
                 className="text-slate-400 hover:text-red-500 transition-colors"
-                title="Sign out"
+                title={t("Logout")}
               >
                 <LogOut className="w-5 h-5" />
               </button>
@@ -177,12 +202,27 @@ const Footer = () => (
   </footer>
 );
 
-const App = () => {
-  const { user, loading } = useAuth();
+function AppInner() {
+  const { user, loading, logout } = useAuth();
   const [currentPage, setCurrentPage] = useState("home");
   const [isSystemOpen, setIsSystemOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const dropdownRef = useRef(null);
+
+  // Detect invite token in URL on mount
+  const [inviteToken, setInviteToken] = useState(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tok = params.get("invite");
+    if (tok) {
+      setInviteToken(tok);
+      setCurrentPage("register");
+      // Clean URL without reload
+      const url = new URL(window.location.href);
+      url.searchParams.delete("invite");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -193,7 +233,6 @@ const App = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Close mobile menu on page change
   useEffect(() => setMobileOpen(false), [currentPage]);
 
   if (loading) {
@@ -208,7 +247,20 @@ const App = () => {
     return <LoginPage onSuccess={() => setCurrentPage("home")} />;
   }
 
+  if (currentPage === "register") {
+    return (
+      <RegisterPage
+        inviteToken={inviteToken}
+        onSuccess={() => setCurrentPage("home")}
+        onLogin={() => setCurrentPage("login")}
+      />
+    );
+  }
+
   const renderContent = () => {
+    if (currentPage === "profile" && user) {
+      return <ProfilePage user={user} onLogout={() => { logout(); setCurrentPage("home"); }} />;
+    }
     if (currentPage === "sys-health" && user?.role === "admin") {
       return <SystemHealthPage />;
     }
@@ -222,12 +274,12 @@ const App = () => {
       return <NewsSection />;
     }
     if (currentPage === "family") {
-      return <FamilyPage />;
+      return <FamilyPage setCurrentPage={setCurrentPage} />;
     }
     if (currentPage === "projects") {
       return <ProjectsPage />;
     }
-    return <HomePage onViewAllNews={() => setCurrentPage("news-all")} />;
+    return <HomePage onViewAllNews={() => setCurrentPage("news-all")} onViewAllPosts={() => setCurrentPage("family")} />;
   };
 
   return (
@@ -253,6 +305,12 @@ const App = () => {
       <Footer />
     </div>
   );
-};
+}
+
+const App = () => (
+  <LangProvider>
+    <AppInner />
+  </LangProvider>
+);
 
 export default App;

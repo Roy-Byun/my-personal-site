@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { AlertCircle, ExternalLink, Info, Megaphone, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useAuth } from "./AuthContext";
+import InfoTooltip from "./InfoTooltip";
 
 const inputCls = "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500";
 
@@ -60,7 +61,10 @@ const AnnouncementsWidget = () => {
       <div className="flex items-center justify-between px-5 pt-5 pb-4 shrink-0">
         <div className="flex items-center gap-2">
           <Megaphone className="w-4 h-4 text-indigo-500" />
-          <h3 className="font-bold text-slate-800">Announcements</h3>
+          <h3 className="font-bold text-slate-800 flex items-center">
+            Announcements
+            <InfoTooltip text="관리자가 게시하는 공지사항입니다. 중요 소식이나 일정을 확인하세요. (Admin announcements — important notices and updates for the family)" />
+          </h3>
         </div>
         {isAdmin && (
           <button onClick={() => { setForm(EMPTY); setModal("create"); }} className="text-slate-400 hover:text-indigo-600 p-1 rounded transition-colors" title="Add announcement">

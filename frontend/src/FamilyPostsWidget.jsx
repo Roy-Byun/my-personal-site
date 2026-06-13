@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Image, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useAuth } from "./AuthContext";
+import InfoTooltip from "./InfoTooltip";
+import { useT } from "./i18n";
 
 const EMOJIS = ["❤️", "🎉", "😢", "💪", "🙏", "😊"];
 
@@ -27,6 +29,7 @@ const EMPTY_FORM = { title: "", content: "", image_url: "", post_type: "update" 
 
 const FamilyPostsWidget = () => {
   const { user } = useAuth();
+  const { t } = useT();
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
@@ -82,7 +85,10 @@ const FamilyPostsWidget = () => {
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-5 pt-5 pb-4 shrink-0">
-        <h3 className="font-bold text-slate-800">Family News</h3>
+        <h3 className="font-bold text-slate-800 flex items-center">
+          {t("Family News")}
+          <InfoTooltip text="가족 소식을 공유하는 공간입니다. 모든 가족이 볼 수 있어요. (Family News — share updates, achievements, and milestones with the whole family)" />
+        </h3>
         {user && (
           <button onClick={openCreate} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-700 flex items-center gap-1 transition-colors">
             <Plus className="w-3.5 h-3.5" /> Share

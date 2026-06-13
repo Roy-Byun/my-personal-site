@@ -55,6 +55,14 @@ def get_current_user(
     user = db.query(User).filter(User.id == int(user_id)).first()
     if user is None:
         raise exc
+    if not getattr(user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Account has been deactivated. Contact admin.")
+    if getattr(user, "is_suspended", False):
+        until = getattr(user, "suspended_until", None)
+        if until is None or until > datetime.utcnow():
+            msg = (f"Account suspended until {until.strftime('%Y-%m-%d')}"
+                   if until else "Account permanently banned.")
+            raise HTTPException(status_code=403, detail=msg)
     return user
 
 

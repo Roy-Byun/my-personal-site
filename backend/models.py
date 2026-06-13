@@ -30,6 +30,26 @@ class User(Base):
     # Profile
     profile_picture_url = Column(String, nullable=True)
 
+    # Account status
+    is_active = Column(Boolean, nullable=False, default=True)
+    deactivated_at = Column(DateTime, nullable=True)
+    is_suspended = Column(Boolean, nullable=False, default=False)
+    suspended_until = Column(DateTime, nullable=True)   # None = permanent ban
+    suspension_reason = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InviteToken(Base):
+    __tablename__ = "invite_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String(64), unique=True, nullable=False, index=True)
+    created_by_id = Column(Integer, nullable=False)
+    note = Column(String, nullable=True)              # optional "for: Roy"
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    used_by_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
