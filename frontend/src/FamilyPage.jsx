@@ -3,6 +3,7 @@ import { Camera, Gift, MessageSquare, UtensilsCrossed, Users } from "lucide-reac
 import { useAuth } from "./AuthContext";
 import { flagEmoji } from "./countries";
 import FamilyPostsWidget from "./FamilyPostsWidget";
+import FamilyCalendarFull from "./FamilyCalendarFull";
 import InfoTooltip from "./InfoTooltip";
 import { useT } from "./i18n";
 
@@ -150,9 +151,14 @@ const FamilyPage = ({ setCurrentPage }) => {
         )}
       </div>
 
-      {/* Family News full widget */}
-      <div className="mb-10">
-        <FamilyPostsWidget />
+      {/* Calendar + Family News side by side */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 mb-10">
+        <div className="lg:col-span-7">
+          <FamilyCalendarFull />
+        </div>
+        <div className="lg:col-span-5">
+          <FamilyPostsWidget />
+        </div>
       </div>
 
       {/* Coming-soon features */}
