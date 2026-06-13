@@ -74,41 +74,29 @@ def shutdown() -> None:
 
 
 def _run_migrations() -> None:
-    users_cols = [
-        ("first_name",          "VARCHAR"),
-        ("last_name",           "VARCHAR"),
-        ("western_name",        "VARCHAR"),
-        ("birthday",            "DATE"),
-        ("birthday_lunar",      "DATE"),
-        ("is_lunar",            "BOOLEAN DEFAULT FALSE"),
-        ("country_code",        "VARCHAR(10)"),
-        ("phone_number",        "VARCHAR(20)"),
-        ("profile_picture_url", "TEXT"),
+    # Each column gets its own transaction so a "column already exists" error
+    # on one does not abort the PostgreSQL transaction and skip the rest.
+    migrations = [
+        ("users",         "first_name",          "VARCHAR"),
+        ("users",         "last_name",           "VARCHAR"),
+        ("users",         "western_name",        "VARCHAR"),
+        ("users",         "birthday",            "DATE"),
+        ("users",         "birthday_lunar",      "DATE"),
+        ("users",         "is_lunar",            "BOOLEAN DEFAULT FALSE"),
+        ("users",         "country_code",        "VARCHAR(10)"),
+        ("users",         "phone_number",        "VARCHAR(20)"),
+        ("users",         "profile_picture_url", "TEXT"),
+        ("news_articles", "is_archived",         "BOOLEAN DEFAULT FALSE"),
+        ("family_events", "recurrence_type",     "VARCHAR(20)"),
+        ("family_events", "recurrence_interval", "INTEGER DEFAULT 1"),
+        ("family_events", "recurrence_end",      "DATE"),
     ]
-    news_cols = [
-        ("is_archived", "BOOLEAN DEFAULT FALSE"),
-    ]
-    event_cols = [
-        ("recurrence_type",     "VARCHAR(20)"),
-        ("recurrence_interval", "INTEGER DEFAULT 1"),
-        ("recurrence_end",      "DATE"),
-    ]
-    with engine.begin() as conn:
-        for col, col_type in users_cols:
-            try:
-                conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass
-        for col, col_type in news_cols:
-            try:
-                conn.execute(text(f"ALTER TABLE news_articles ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass
-        for col, col_type in event_cols:
-            try:
-                conn.execute(text(f"ALTER TABLE family_events ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass
+    for table, col, col_type in migrations:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+        except Exception:
+            pass
 
 
 def _seed_admin() -> None:
