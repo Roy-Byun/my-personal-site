@@ -341,6 +341,18 @@ const ArticlesTab = () => {
     finally { setFetching(false); }
   };
 
+  const triggerRecategorize = async () => {
+    setFetching(true);
+    try {
+      const res = await fetch("/api/news/recategorize", { method: "POST", credentials: "include" });
+      if (res.ok) {
+        const d = await res.json();
+        alert(`Re-categorized ${d.updated} of ${d.total} articles.`);
+        load(catFilter, 1, false);
+      }
+    } finally { setFetching(false); }
+  };
+
   return (
     <div>
       <div className="flex flex-wrap items-center gap-3 mb-4">
@@ -350,6 +362,9 @@ const ArticlesTab = () => {
         <div className="ml-auto flex gap-2">
           <button onClick={triggerFetch} disabled={fetching} className={btnPrimary}>
             <RefreshCw className={`w-4 h-4 ${fetching ? "animate-spin" : ""}`} /> Fetch Now
+          </button>
+          <button onClick={triggerRecategorize} disabled={fetching} className={btnPrimary} title="Re-run keyword classifier on all stored articles">
+            <Zap className="w-4 h-4" /> Re-categorize
           </button>
           <button onClick={() => { setForm(EMPTY_ARTICLE); setFormError(""); setModal(true); }} className={btnPrimary}>
             <Plus className="w-4 h-4" /> Create Article

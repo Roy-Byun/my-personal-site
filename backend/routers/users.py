@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from auth_utils import hash_password, require_admin
+from auth_utils import get_current_user, hash_password, require_admin
 from database import get_db
 from models import User
 
@@ -107,7 +107,31 @@ def _apply_fields(user: User, body: UserCreate | UserUpdate) -> None:
         user.hashed_password = hash_password(body.password)
 
 
+class UserFamilyOut(BaseModel):
+    id: int
+    first_name: Optional[str]
+    last_name: Optional[str]
+    western_name: Optional[str]
+    full_name: Optional[str]
+    role: str
+    birthday: Optional[date]
+    country_code: Optional[str]
+    phone_number: Optional[str]
+    profile_picture_url: Optional[str]
+
+    model_config = {"from_attributes": True}
+
+
 # ── endpoints ──────────────────────────────────────────────────────────────
+
+@router.get("/family", response_model=List[UserFamilyOut])
+def list_family_members(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Visible to all authenticated family members (no sensitive fields)."""
+    return db.query(User).order_by(User.created_at).all()
+
 
 @router.get("", response_model=List[UserAdminOut])
 def list_users(

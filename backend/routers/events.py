@@ -144,12 +144,8 @@ def _birthday_events_in_range(db: Session, start: date, end: date) -> list[dict]
             except ValueError:
                 continue
             if start <= this_year <= end:
-                name = (
-                    f"{u.last_name or ''}{u.first_name or ''}".strip()
-                    or u.western_name
-                    or u.full_name
-                    or u.username
-                )
+                parts = [p for p in [u.last_name, u.first_name] if p]
+                name = " ".join(parts) if parts else (u.western_name or u.full_name or u.username)
                 events.append({
                     "id": None,
                     "title": f"🎂 {name}의 생일",

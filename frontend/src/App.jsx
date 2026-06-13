@@ -20,6 +20,8 @@ import UsersPage from "./UsersPage";
 import NewsSection from "./NewsSection";
 import NewsAdminPage from "./NewsAdminPage";
 import HomePage from "./HomePage";
+import FamilyPage from "./FamilyPage";
+import ProjectsPage from "./ProjectsPage";
 
 const Navigation = ({
   currentPage,
@@ -218,6 +220,12 @@ const App = () => {
     }
     if (currentPage === "news-all") {
       return <NewsSection />;
+    }
+    if (currentPage === "family") {
+      return <FamilyPage />;
+    }
+    if (currentPage === "projects") {
+      return <ProjectsPage />;
     }
     return <HomePage onViewAllNews={() => setCurrentPage("news-all")} />;
   };

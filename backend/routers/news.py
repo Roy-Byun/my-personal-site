@@ -177,6 +177,23 @@ def trigger_fetch(
     return {"detail": "Fetch cycle completed"}
 
 
+@router.post("/recategorize", status_code=200)
+def recategorize_all(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Re-run the keyword classifier on every stored article."""
+    articles = db.query(NewsArticle).all()
+    updated = 0
+    for a in articles:
+        new_cat = categorize(a.title, a.summary or "")
+        if new_cat != a.category:
+            a.category = new_cat
+            updated += 1
+    db.commit()
+    return {"updated": updated, "total": len(articles)}
+
+
 # ── Admin: article CRUD ────────────────────────────────────────────────────
 
 @router.post("", response_model=ArticleOut, status_code=status.HTTP_201_CREATED)
