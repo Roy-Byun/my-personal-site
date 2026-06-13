@@ -55,12 +55,9 @@ export const PAGE_LABELS = {
   "news-admin": "News Management",
 };
 
-// ── Page header ──────────────────────────────────────────────────────────────
+// ── Page banner (dark) ───────────────────────────────────────────────────────
 
-function PageHeader({ pageHistory, navigateToIndex }) {
-  const currentPage = pageHistory[pageHistory.length - 1];
-
-  // Full hero only on Home
+function PageBanner({ currentPage }) {
   if (currentPage === "home") {
     return (
       <header className="w-full py-20 px-6 bg-slate-800 text-left text-white">
@@ -72,26 +69,39 @@ function PageHeader({ pageHistory, navigateToIndex }) {
     );
   }
 
-  const title = PAGE_LABELS[currentPage] || currentPage;
-
   return (
     <header className="w-full py-8 px-6 bg-slate-800 text-white">
-      <div className="max-w-7xl mx-auto space-y-1.5">
-        {/* Breadcrumb trail */}
-        <nav aria-label="Breadcrumb" className="flex items-center flex-wrap gap-1 text-xs">
+      <div className="max-w-7xl mx-auto">
+        <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
+          {PAGE_LABELS[currentPage] || currentPage}
+        </h1>
+      </div>
+    </header>
+  );
+}
+
+// ── Breadcrumb row (below banner, above content) ──────────────────────────────
+
+function Breadcrumb({ pageHistory, navigateToIndex }) {
+  if (pageHistory.length <= 1) return null;
+
+  return (
+    <div className="w-full bg-white border-b border-slate-200">
+      <div className="max-w-7xl mx-auto px-6 py-2.5">
+        <nav aria-label="Breadcrumb" className="flex items-center flex-wrap gap-1 text-xs text-slate-500">
           {pageHistory.map((page, i) => {
             const isLast = i === pageHistory.length - 1;
             return (
               <React.Fragment key={`${page}-${i}`}>
-                {i > 0 && <ChevronRight className="w-3 h-3 text-slate-500 shrink-0" />}
+                {i > 0 && <ChevronRight className="w-3 h-3 text-slate-300 shrink-0" />}
                 {isLast ? (
-                  <span className="text-slate-300 font-semibold">
+                  <span className="font-semibold text-slate-700">
                     {PAGE_LABELS[page] || page}
                   </span>
                 ) : (
                   <button
                     onClick={() => navigateToIndex(i)}
-                    className="text-slate-400 hover:text-white transition-colors"
+                    className="hover:text-indigo-600 transition-colors"
                   >
                     {PAGE_LABELS[page] || page}
                   </button>
@@ -100,11 +110,8 @@ function PageHeader({ pageHistory, navigateToIndex }) {
             );
           })}
         </nav>
-
-        {/* Page title */}
-        <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">{title}</h1>
       </div>
-    </header>
+    </div>
   );
 }
 
@@ -382,7 +389,8 @@ function AppInner() {
         setMobileOpen={setMobileOpen}
       />
       <main className="flex-grow">
-        <PageHeader pageHistory={pageHistory} navigateToIndex={navigateToIndex} />
+        <PageBanner currentPage={currentPage} />
+        <Breadcrumb pageHistory={pageHistory} navigateToIndex={navigateToIndex} />
         {renderContent()}
       </main>
       <Footer />
