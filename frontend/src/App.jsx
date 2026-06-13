@@ -25,6 +25,7 @@ import NewsSection from "./NewsSection";
 import NewsAdminPage from "./NewsAdminPage";
 import HomePage from "./HomePage";
 import FamilyPage from "./FamilyPage";
+import FamilyTreePage from "./FamilyTreePage";
 import ProjectsPage from "./ProjectsPage";
 
 function LangToggle() {
@@ -275,6 +276,9 @@ function AppInner() {
     }
     if (currentPage === "family") {
       return <FamilyPage setCurrentPage={setCurrentPage} />;
+    }
+    if (currentPage === "family-tree") {
+      return <FamilyTreePage />;
     }
     if (currentPage === "projects") {
       return <ProjectsPage />;

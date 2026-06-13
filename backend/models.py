@@ -139,6 +139,17 @@ class FamilyEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class FamilyRelationship(Base):
+    __tablename__ = "family_relationships"
+
+    id = Column(Integer, primary_key=True, index=True)
+    from_user_id = Column(Integer, nullable=False, index=True)
+    to_user_id = Column(Integer, nullable=False, index=True)
+    # "parent_of" | "spouse_of" | "sibling_of"
+    relation_type = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class FamilyPost(Base):
     __tablename__ = "family_posts"
 

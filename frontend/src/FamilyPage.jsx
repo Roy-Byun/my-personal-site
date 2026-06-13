@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Camera, Gift, MessageSquare, UtensilsCrossed, Users } from "lucide-react";
+import { Camera, Gift, GitFork, MessageSquare, UtensilsCrossed, Users } from "lucide-react";
 import { useAuth } from "./AuthContext";
 import { flagEmoji } from "./countries";
 import FamilyPostsWidget from "./FamilyPostsWidget";
@@ -129,14 +129,23 @@ const FamilyPage = ({ setCurrentPage }) => {
 
       {/* Members section */}
       <div className="mb-10">
-        <div className="flex items-center gap-3 mb-6">
-          <Users className="w-5 h-5 text-indigo-500" />
-          <h2 className="text-xl font-bold text-slate-800">
-            {t("Family Members")}
-            <InfoTooltip text="가족 구성원 목록입니다. 로그인한 가족만 볼 수 있어요. (Visible to logged-in family members only)" />
-          </h2>
-          <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{members.length} members</span>
-        </div>
+        <div className="flex items-center justify-between gap-3 mb-6">
+          <div className="flex items-center gap-3">
+            <Users className="w-5 h-5 text-indigo-500" />
+            <h2 className="text-xl font-bold text-slate-800">
+              {t("Family Members")}
+              <InfoTooltip text="가족 구성원 목록입니다. 로그인한 가족만 볼 수 있어요. (Visible to logged-in family members only)" />
+            </h2>
+            <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{members.length} members</span>
+          </div>
+          {setCurrentPage && (
+            <button
+              onClick={() => setCurrentPage("family-tree")}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-indigo-600 border border-indigo-200 rounded-lg hover:bg-indigo-50 transition-colors"
+            >
+              <GitFork className="w-4 h-4" /> Family Tree
+            </button>
+          )}
 
         {!user ? (
           <p className="text-slate-400 text-sm">Please log in to view family members.</p>

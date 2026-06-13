@@ -12,7 +12,7 @@ from models import User
 from news_fetcher import cleanup_old_articles, run_fetch_cycle
 from routers import auth, health, system, users
 from routers import news as news_router
-from routers import announcements, events, invites, posts
+from routers import announcements, events, family_tree, invites, posts
 
 logging.basicConfig(level=logging.INFO)
 
@@ -131,6 +131,7 @@ app.include_router(auth.router)
 app.include_router(system.router)
 app.include_router(users.router)
 app.include_router(invites.router)
+app.include_router(family_tree.router)
 app.include_router(news_router.router)
 app.include_router(announcements.router)
 app.include_router(events.router)
