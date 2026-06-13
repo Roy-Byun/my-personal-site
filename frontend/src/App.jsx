@@ -3,6 +3,7 @@ import {
   Activity,
   Briefcase,
   ChevronDown,
+  ChevronLeft,
   Globe,
   LogIn,
   LogOut,
@@ -42,9 +43,23 @@ function LangToggle() {
   );
 }
 
+const PAGE_LABELS = {
+  home: "Home",
+  family: "Family",
+  "family-tree": "Family Tree",
+  projects: "Projects",
+  profile: "Profile",
+  "news-all": "News",
+  "sys-health": "System Health",
+  users: "Users",
+  "news-admin": "News Admin",
+};
+
 const Navigation = ({
   currentPage,
-  setCurrentPage,
+  canGoBack,
+  goBack,
+  navigate,
   isSystemOpen,
   setIsSystemOpen,
   dropdownRef,
@@ -58,13 +73,13 @@ const Navigation = ({
   const navLinks = (isMobile = false) => (
     <>
       <button
-        onClick={() => { setCurrentPage("projects"); setMobileOpen(false); }}
+        onClick={() => { navigate("projects"); setMobileOpen(false); }}
         className={`hover:text-indigo-600 flex items-center gap-1 ${isMobile ? "w-full py-2" : ""}`}
       >
         <Briefcase className="w-4 h-4" /> {t("Projects")}
       </button>
       <button
-        onClick={() => { setCurrentPage("family"); setMobileOpen(false); }}
+        onClick={() => { navigate("family"); setMobileOpen(false); }}
         className={`hover:text-indigo-600 flex items-center gap-1 ${isMobile ? "w-full py-2" : ""}`}
       >
         <Users className="w-4 h-4" /> {t("Family")}
@@ -88,19 +103,19 @@ const Navigation = ({
               }
             >
               <button
-                onClick={() => { setCurrentPage("sys-health"); setIsSystemOpen(false); setMobileOpen(false); }}
+                onClick={() => { navigate("sys-health"); setIsSystemOpen(false); setMobileOpen(false); }}
                 className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 flex items-center gap-2"
               >
                 <Activity className="w-4 h-4" /> System Health
               </button>
               <button
-                onClick={() => { setCurrentPage("users"); setIsSystemOpen(false); setMobileOpen(false); }}
+                onClick={() => { navigate("users"); setIsSystemOpen(false); setMobileOpen(false); }}
                 className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 flex items-center gap-2"
               >
                 <UserCog className="w-4 h-4" /> User Management
               </button>
               <button
-                onClick={() => { setCurrentPage("news-admin"); setIsSystemOpen(false); setMobileOpen(false); }}
+                onClick={() => { navigate("news-admin"); setIsSystemOpen(false); setMobileOpen(false); }}
                 className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 flex items-center gap-2"
               >
                 <Newspaper className="w-4 h-4" /> News Management
@@ -115,14 +130,29 @@ const Navigation = ({
   return (
     <nav className="bg-white border-b sticky top-0 z-50 shadow-sm">
       <div className="h-16 px-6 flex items-center justify-between">
-        {/* Left: logo + desktop links */}
-        <div className="flex items-center gap-8">
+        {/* Left: logo + back button + desktop links */}
+        <div className="flex items-center gap-4">
           <div
-            className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center cursor-pointer shadow-md"
-            onClick={() => { setCurrentPage("home"); setMobileOpen(false); }}
+            className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center cursor-pointer shadow-md shrink-0"
+            onClick={() => { navigate("home"); setMobileOpen(false); }}
           >
             <span className="text-white font-bold text-xl italic tracking-tighter">HH</span>
           </div>
+
+          {/* Back button — shown when not on home */}
+          {canGoBack && (
+            <button
+              onClick={goBack}
+              className="flex items-center gap-0.5 text-sm font-medium text-slate-400 hover:text-indigo-600 transition-colors group"
+              title="Go back"
+            >
+              <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" />
+              <span className="hidden sm:inline">
+                {PAGE_LABELS[currentPage] ? `Back` : "Back"}
+              </span>
+            </button>
+          )}
+
           <div className="hidden md:flex items-center gap-6 text-sm font-semibold text-slate-600">
             {navLinks(false)}
           </div>
@@ -134,7 +164,7 @@ const Navigation = ({
 
           {!user ? (
             <button
-              onClick={() => setCurrentPage("login")}
+              onClick={() => navigate("login")}
               className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 flex items-center gap-2 transition-colors"
             >
               <LogIn className="w-4 h-4" /> {t("Login")}
@@ -152,7 +182,7 @@ const Navigation = ({
                 </p>
               </div>
               <button
-                onClick={() => setCurrentPage("profile")}
+                onClick={() => navigate("profile")}
                 className="w-10 h-10 rounded-full border-2 border-indigo-600 flex items-center justify-center bg-slate-100 hover:bg-indigo-50 transition-colors"
                 title={t("My Profile")}
               >
@@ -182,6 +212,14 @@ const Navigation = ({
       {/* Mobile dropdown */}
       {mobileOpen && (
         <div className="md:hidden border-t bg-white px-6 py-3 flex flex-col text-sm font-semibold text-slate-600">
+          {canGoBack && (
+            <button
+              onClick={() => { goBack(); setMobileOpen(false); }}
+              className="flex items-center gap-1 py-2 text-slate-400 hover:text-indigo-600"
+            >
+              <ChevronLeft className="w-4 h-4" /> Back
+            </button>
+          )}
           {navLinks(true)}
         </div>
       )}
@@ -205,9 +243,26 @@ const Footer = () => (
 
 function AppInner() {
   const { user, loading, logout } = useAuth();
-  const [currentPage, setCurrentPage] = useState("home");
+
+  // Navigation stack — back button pops the stack
+  const [pageHistory, setPageHistory] = useState(["home"]);
+  const currentPage = pageHistory[pageHistory.length - 1];
+  const canGoBack   = pageHistory.length > 1;
+
+  function navigate(page) {
+    setPageHistory(h => {
+      if (page === "home") return ["home"];            // reset to root
+      if (h[h.length - 1] === page) return h;         // already here
+      return [...h, page];
+    });
+  }
+
+  function goBack() {
+    setPageHistory(h => h.length > 1 ? h.slice(0, -1) : ["home"]);
+  }
+
   const [isSystemOpen, setIsSystemOpen] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileOpen, setMobileOpen]     = useState(false);
   const dropdownRef = useRef(null);
 
   // Detect invite token in URL on mount
@@ -217,21 +272,20 @@ function AppInner() {
     const tok = params.get("invite");
     if (tok) {
       setInviteToken(tok);
-      setCurrentPage("register");
-      // Clean URL without reload
+      navigate("register");
       const url = new URL(window.location.href);
       url.searchParams.delete("invite");
       window.history.replaceState({}, "", url.toString());
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const handleClickOutside = (e) => {
+    const handler = (e) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target))
         setIsSystemOpen(false);
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, []);
 
   useEffect(() => setMobileOpen(false), [currentPage]);
@@ -245,52 +299,50 @@ function AppInner() {
   }
 
   if (currentPage === "login") {
-    return <LoginPage onSuccess={() => setCurrentPage("home")} />;
+    return (
+      <LoginPage
+        onSuccess={() => navigate("home")}
+        onBack={canGoBack ? goBack : null}
+      />
+    );
   }
 
   if (currentPage === "register") {
     return (
       <RegisterPage
         inviteToken={inviteToken}
-        onSuccess={() => setCurrentPage("home")}
-        onLogin={() => setCurrentPage("login")}
+        onSuccess={() => navigate("home")}
+        onLogin={() => navigate("login")}
       />
     );
   }
 
   const renderContent = () => {
     if (currentPage === "profile" && user) {
-      return <ProfilePage user={user} onLogout={() => { logout(); setCurrentPage("home"); }} />;
+      return <ProfilePage user={user} onLogout={() => { logout(); navigate("home"); }} />;
     }
-    if (currentPage === "sys-health" && user?.role === "admin") {
-      return <SystemHealthPage />;
-    }
-    if (currentPage === "users" && user?.role === "admin") {
-      return <UsersPage />;
-    }
-    if (currentPage === "news-admin" && user?.role === "admin") {
-      return <NewsAdminPage />;
-    }
-    if (currentPage === "news-all") {
-      return <NewsSection />;
-    }
-    if (currentPage === "family") {
-      return <FamilyPage setCurrentPage={setCurrentPage} />;
-    }
-    if (currentPage === "family-tree") {
-      return <FamilyTreePage />;
-    }
-    if (currentPage === "projects") {
-      return <ProjectsPage />;
-    }
-    return <HomePage onViewAllNews={() => setCurrentPage("news-all")} onViewAllPosts={() => setCurrentPage("family")} />;
+    if (currentPage === "sys-health" && user?.role === "admin") return <SystemHealthPage />;
+    if (currentPage === "users"     && user?.role === "admin") return <UsersPage />;
+    if (currentPage === "news-admin"&& user?.role === "admin") return <NewsAdminPage />;
+    if (currentPage === "news-all")    return <NewsSection />;
+    if (currentPage === "family")      return <FamilyPage setCurrentPage={navigate} />;
+    if (currentPage === "family-tree") return <FamilyTreePage />;
+    if (currentPage === "projects")    return <ProjectsPage />;
+    return (
+      <HomePage
+        onViewAllNews={() => navigate("news-all")}
+        onViewAllPosts={() => navigate("family")}
+      />
+    );
   };
 
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 text-slate-900 font-sans">
       <Navigation
         currentPage={currentPage}
-        setCurrentPage={setCurrentPage}
+        canGoBack={canGoBack}
+        goBack={goBack}
+        navigate={navigate}
         isSystemOpen={isSystemOpen}
         setIsSystemOpen={setIsSystemOpen}
         dropdownRef={dropdownRef}

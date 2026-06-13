@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { Eye, EyeOff, LogIn } from "lucide-react";
+import { ChevronLeft, Eye, EyeOff, LogIn } from "lucide-react";
 import { useAuth } from "./AuthContext";
 
-const LoginPage = ({ onSuccess }) => {
+const LoginPage = ({ onSuccess, onBack }) => {
   const { login } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -27,6 +27,17 @@ const LoginPage = ({ onSuccess }) => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
       <div className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-sm p-8">
+        {/* Back button */}
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="flex items-center gap-1 text-sm text-slate-400 hover:text-indigo-600 transition-colors mb-6 -ml-1 group"
+          >
+            <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" />
+            Back
+          </button>
+        )}
+
         {/* Logo + title */}
         <div className="flex items-center gap-3 mb-8">
           <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center shadow-md">
