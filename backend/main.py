@@ -78,6 +78,7 @@ def _run_migrations() -> None:
         ("first_name",          "VARCHAR"),
         ("last_name",           "VARCHAR"),
         ("western_name",        "VARCHAR"),
+        ("birthday",            "DATE"),
         ("birthday_lunar",      "DATE"),
         ("is_lunar",            "BOOLEAN DEFAULT FALSE"),
         ("country_code",        "VARCHAR(10)"),
