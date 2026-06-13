@@ -3,7 +3,7 @@ import {
   Activity,
   Briefcase,
   ChevronDown,
-  ChevronLeft,
+  ChevronRight,
   Globe,
   LogIn,
   LogOut,
@@ -43,22 +43,74 @@ function LangToggle() {
   );
 }
 
-const PAGE_LABELS = {
-  home: "Home",
-  family: "Family",
-  "family-tree": "Family Tree",
-  projects: "Projects",
-  profile: "Profile",
-  "news-all": "News",
+export const PAGE_LABELS = {
+  home:         "Home",
+  family:       "Family",
+  "family-tree":"Family Tree",
+  projects:     "Projects",
+  profile:      "My Profile",
+  "news-all":   "News",
   "sys-health": "System Health",
-  users: "Users",
-  "news-admin": "News Admin",
+  users:        "User Management",
+  "news-admin": "News Management",
 };
 
+// ── Page header ──────────────────────────────────────────────────────────────
+
+function PageHeader({ pageHistory, navigateToIndex }) {
+  const currentPage = pageHistory[pageHistory.length - 1];
+
+  // Full hero only on Home
+  if (currentPage === "home") {
+    return (
+      <header className="w-full py-20 px-6 bg-slate-800 text-left text-white">
+        <div className="max-w-7xl mx-auto">
+          <h1 className="text-4xl md:text-5xl font-extrabold italic mb-4">HeptaHog</h1>
+          <p className="text-slate-300 text-lg max-w-2xl">Hosted on Roika Mini PC Node.</p>
+        </div>
+      </header>
+    );
+  }
+
+  const title = PAGE_LABELS[currentPage] || currentPage;
+
+  return (
+    <header className="w-full py-8 px-6 bg-slate-800 text-white">
+      <div className="max-w-7xl mx-auto space-y-1.5">
+        {/* Breadcrumb trail */}
+        <nav aria-label="Breadcrumb" className="flex items-center flex-wrap gap-1 text-xs">
+          {pageHistory.map((page, i) => {
+            const isLast = i === pageHistory.length - 1;
+            return (
+              <React.Fragment key={`${page}-${i}`}>
+                {i > 0 && <ChevronRight className="w-3 h-3 text-slate-500 shrink-0" />}
+                {isLast ? (
+                  <span className="text-slate-300 font-semibold">
+                    {PAGE_LABELS[page] || page}
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => navigateToIndex(i)}
+                    className="text-slate-400 hover:text-white transition-colors"
+                  >
+                    {PAGE_LABELS[page] || page}
+                  </button>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </nav>
+
+        {/* Page title */}
+        <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">{title}</h1>
+      </div>
+    </header>
+  );
+}
+
+// ── Navigation bar ────────────────────────────────────────────────────────────
+
 const Navigation = ({
-  currentPage,
-  canGoBack,
-  goBack,
   navigate,
   isSystemOpen,
   setIsSystemOpen,
@@ -130,28 +182,14 @@ const Navigation = ({
   return (
     <nav className="bg-white border-b sticky top-0 z-50 shadow-sm">
       <div className="h-16 px-6 flex items-center justify-between">
-        {/* Left: logo + back button + desktop links */}
-        <div className="flex items-center gap-4">
+        {/* Left: logo + desktop nav links */}
+        <div className="flex items-center gap-6">
           <div
             className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center cursor-pointer shadow-md shrink-0"
-            onClick={() => { navigate("home"); setMobileOpen(false); }}
+            onClick={() => navigate("home")}
           >
             <span className="text-white font-bold text-xl italic tracking-tighter">HH</span>
           </div>
-
-          {/* Back button — shown when not on home */}
-          {canGoBack && (
-            <button
-              onClick={goBack}
-              className="flex items-center gap-0.5 text-sm font-medium text-slate-400 hover:text-indigo-600 transition-colors group"
-              title="Go back"
-            >
-              <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" />
-              <span className="hidden sm:inline">
-                {PAGE_LABELS[currentPage] ? `Back` : "Back"}
-              </span>
-            </button>
-          )}
 
           <div className="hidden md:flex items-center gap-6 text-sm font-semibold text-slate-600">
             {navLinks(false)}
@@ -198,7 +236,6 @@ const Navigation = ({
             </div>
           )}
 
-          {/* Hamburger — mobile only */}
           <button
             className="md:hidden text-slate-600 hover:text-indigo-600 transition-colors ml-1"
             onClick={() => setMobileOpen(!mobileOpen)}
@@ -212,20 +249,14 @@ const Navigation = ({
       {/* Mobile dropdown */}
       {mobileOpen && (
         <div className="md:hidden border-t bg-white px-6 py-3 flex flex-col text-sm font-semibold text-slate-600">
-          {canGoBack && (
-            <button
-              onClick={() => { goBack(); setMobileOpen(false); }}
-              className="flex items-center gap-1 py-2 text-slate-400 hover:text-indigo-600"
-            >
-              <ChevronLeft className="w-4 h-4" /> Back
-            </button>
-          )}
           {navLinks(true)}
         </div>
       )}
     </nav>
   );
 };
+
+// ── Footer ───────────────────────────────────────────────────────────────────
 
 const Footer = () => (
   <footer className="bg-white border-t border-slate-200 py-10 px-6 mt-auto">
@@ -241,24 +272,28 @@ const Footer = () => (
   </footer>
 );
 
+// ── App ───────────────────────────────────────────────────────────────────────
+
 function AppInner() {
   const { user, loading, logout } = useAuth();
 
-  // Navigation stack — back button pops the stack
+  // Navigation history stack
   const [pageHistory, setPageHistory] = useState(["home"]);
   const currentPage = pageHistory[pageHistory.length - 1];
-  const canGoBack   = pageHistory.length > 1;
 
   function navigate(page) {
     setPageHistory(h => {
-      if (page === "home") return ["home"];            // reset to root
-      if (h[h.length - 1] === page) return h;         // already here
+      if (page === "home") return ["home"];
+      if (h[h.length - 1] === page) return h;
+      // If page already exists earlier in history, slice back to it
+      const existing = h.lastIndexOf(page);
+      if (existing !== -1) return h.slice(0, existing + 1);
       return [...h, page];
     });
   }
 
-  function goBack() {
-    setPageHistory(h => h.length > 1 ? h.slice(0, -1) : ["home"]);
+  function navigateToIndex(index) {
+    setPageHistory(h => h.slice(0, index + 1));
   }
 
   const [isSystemOpen, setIsSystemOpen] = useState(false);
@@ -298,15 +333,15 @@ function AppInner() {
     );
   }
 
+  // Full-screen pages (no nav/footer/header)
   if (currentPage === "login") {
     return (
       <LoginPage
         onSuccess={() => navigate("home")}
-        onBack={canGoBack ? goBack : null}
+        onBack={pageHistory.length > 1 ? () => navigateToIndex(pageHistory.length - 2) : null}
       />
     );
   }
-
   if (currentPage === "register") {
     return (
       <RegisterPage
@@ -322,8 +357,8 @@ function AppInner() {
       return <ProfilePage user={user} onLogout={() => { logout(); navigate("home"); }} />;
     }
     if (currentPage === "sys-health" && user?.role === "admin") return <SystemHealthPage />;
-    if (currentPage === "users"     && user?.role === "admin") return <UsersPage />;
-    if (currentPage === "news-admin"&& user?.role === "admin") return <NewsAdminPage />;
+    if (currentPage === "users"      && user?.role === "admin") return <UsersPage />;
+    if (currentPage === "news-admin" && user?.role === "admin") return <NewsAdminPage />;
     if (currentPage === "news-all")    return <NewsSection />;
     if (currentPage === "family")      return <FamilyPage setCurrentPage={navigate} />;
     if (currentPage === "family-tree") return <FamilyTreePage />;
@@ -339,9 +374,6 @@ function AppInner() {
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 text-slate-900 font-sans">
       <Navigation
-        currentPage={currentPage}
-        canGoBack={canGoBack}
-        goBack={goBack}
         navigate={navigate}
         isSystemOpen={isSystemOpen}
         setIsSystemOpen={setIsSystemOpen}
@@ -350,12 +382,7 @@ function AppInner() {
         setMobileOpen={setMobileOpen}
       />
       <main className="flex-grow">
-        <header className="w-full py-20 px-6 bg-slate-800 text-left text-white">
-          <div className="max-w-7xl mx-auto">
-            <h1 className="text-4xl md:text-5xl font-extrabold italic mb-4">HeptaHog</h1>
-            <p className="text-slate-300 text-lg max-w-2xl">Hosted on Roika Mini PC Node.</p>
-          </div>
-        </header>
+        <PageHeader pageHistory={pageHistory} navigateToIndex={navigateToIndex} />
         {renderContent()}
       </main>
       <Footer />
