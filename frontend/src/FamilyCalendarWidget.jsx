@@ -69,7 +69,7 @@ const FamilyCalendarWidget = () => {
   const load = async () => {
     setLoading(true);
     try {
-      const end = new Date(today.getTime() + 60 * 86400000).toISOString().slice(0, 10);
+      const end = new Date(today.getTime() + 30 * 86400000).toISOString().slice(0, 10);
       const start = today.toISOString().slice(0, 10);
       const res = await fetch(`/api/events?start=${start}&end=${end}`);
       if (res.ok) setEvents(await res.json());
@@ -145,7 +145,7 @@ const FamilyCalendarWidget = () => {
     acc[key].push(ev);
     return acc;
   }, {});
-  const dates = Object.keys(grouped).sort().slice(0, 10);
+  const dates = Object.keys(grouped).sort();
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col h-full">
