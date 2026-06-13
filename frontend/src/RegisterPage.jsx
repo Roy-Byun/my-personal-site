@@ -1,39 +1,46 @@
 import { useEffect, useState } from "react";
 import { useT } from "./i18n";
+import { UserFormFields, EMPTY_PROFILE_FORM, inputCls, SectionLabel } from "./UserFormFields";
 
 export default function RegisterPage({ inviteToken, onSuccess, onLogin }) {
   const { t } = useT();
-  const [tokenValid, setTokenValid] = useState(null); // null=checking, true, false
-  const [tokenNote, setTokenNote] = useState("");
-  const [form, setForm] = useState({
-    username: "", password: "", first_name: "", last_name: "",
-    western_name: "", birthday: "", email: "",
-  });
-  const [error, setError] = useState("");
+  const [tokenValid, setTokenValid] = useState(null);
+  const [tokenNote, setTokenNote]   = useState("");
+
+  const [creds, setCreds] = useState({ username: "", password: "" });
+  const [profile, setProfile] = useState(EMPTY_PROFILE_FORM);
+
+  const [error, setError]     = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!inviteToken) { setTokenValid(false); return; }
     fetch(`/api/invites/validate/${encodeURIComponent(inviteToken)}`, { credentials: "include" })
       .then(r => r.json())
-      .then(data => {
-        if (data.valid) { setTokenValid(true); setTokenNote(data.note || ""); }
-        else setTokenValid(false);
-      })
+      .then(d => { if (d.valid) { setTokenValid(true); setTokenNote(d.note || ""); } else setTokenValid(false); })
       .catch(() => setTokenValid(false));
   }, [inviteToken]);
-
-  function set(field) {
-    return e => setForm(prev => ({ ...prev, [field]: e.target.value }));
-  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      const payload = { ...form, invite_token: inviteToken };
-      if (!payload.birthday) delete payload.birthday;
+      const payload = {
+        invite_token: inviteToken,
+        username: creds.username,
+        password: creds.password,
+        ...profile,
+        birthday:       profile.birthday       || null,
+        birthday_lunar: profile.birthday_lunar || null,
+        email:          profile.email          || null,
+        country_code:   profile.country_code   || null,
+        phone_number:   profile.phone_number   || null,
+        profile_picture_url: profile.profile_picture_url || null,
+        first_name:  profile.first_name  || null,
+        last_name:   profile.last_name   || null,
+        western_name: profile.western_name || null,
+      };
       const r = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -73,69 +80,53 @@ export default function RegisterPage({ inviteToken, onSuccess, onLogin }) {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-8">
-      <div className="bg-white rounded-2xl shadow p-8 max-w-md w-full space-y-4">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-8 px-4">
+      <div className="bg-white rounded-2xl shadow p-8 max-w-lg w-full space-y-4">
         <h1 className="text-2xl font-bold text-gray-800">{t("Register")}</h1>
         {tokenNote && (
-          <p className="text-sm text-indigo-600 bg-indigo-50 rounded px-3 py-2">
-            초대: {tokenNote}
-          </p>
+          <p className="text-sm text-indigo-600 bg-indigo-50 rounded px-3 py-2">초대: {tokenNote}</p>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">{t("Last Name")} (성)</label>
-              <input value={form.last_name} onChange={set("last_name")}
-                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">{t("First Name")} (이름)</label>
-              <input value={form.first_name} onChange={set("first_name")}
-                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-            </div>
-          </div>
-
+          {/* Account credentials */}
+          <SectionLabel>계정 (Account)</SectionLabel>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">{t("Western Name")} (영어 이름)</label>
-            <input value={form.western_name} onChange={set("western_name")}
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
+            <label className="block text-xs font-medium text-slate-500 mb-1">
               {t("Username")}
-              <span className="ml-1 text-gray-400 font-normal">(영문·숫자·. _ - @ 만 가능, 변경 불가)</span>
+              <span className="ml-1 text-slate-400 font-normal text-[10px]">(영문·숫자·. _ - @ 만 가능, 변경 불가)</span>
             </label>
-            <input value={form.username} onChange={set("username")} required
+            <input
+              value={creds.username}
+              onChange={e => setCreds(c => ({ ...c, username: e.target.value }))}
+              required
               pattern="[a-zA-Z0-9._\-@]{3,30}"
               title="3-30자, 영문/숫자/. _ - @ 만 허용"
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+              className={inputCls}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">{t("Password")}</label>
+            <input
+              type="password"
+              value={creds.password}
+              onChange={e => setCreds(c => ({ ...c, password: e.target.value }))}
+              required
+              minLength={6}
+              className={inputCls}
+            />
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">{t("Password")}</label>
-            <input type="password" value={form.password} onChange={set("password")} required minLength={6}
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">{t("Birthday")} (선택)</label>
-            <input type="date" value={form.birthday} onChange={set("birthday")}
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">{t("Email")} (선택)</label>
-            <input type="email" value={form.email} onChange={set("email")}
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-          </div>
+          {/* Shared profile fields */}
+          <UserFormFields form={profile} setForm={setProfile} />
 
           {error && <p className="text-sm text-red-600 bg-red-50 rounded px-3 py-2">{error}</p>}
 
-          <button type="submit" disabled={loading}
+          <button
+            type="submit"
+            disabled={loading}
             className="w-full bg-indigo-600 text-white py-2.5 rounded-lg font-semibold
-                       hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+                       hover:bg-indigo-700 disabled:opacity-50 transition-colors mt-2"
+          >
             {loading ? t("Loading…") : t("Create Account")}
           </button>
         </form>

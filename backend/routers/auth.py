@@ -32,7 +32,12 @@ class RegisterRequest(BaseModel):
     last_name: Optional[str] = None
     western_name: Optional[str] = None
     birthday: Optional[date] = None
+    birthday_lunar: Optional[date] = None
+    is_lunar: bool = False
     email: Optional[str] = None
+    country_code: Optional[str] = None
+    phone_number: Optional[str] = None
+    profile_picture_url: Optional[str] = None
 
 
 class ProfileUpdate(BaseModel):
@@ -40,6 +45,8 @@ class ProfileUpdate(BaseModel):
     last_name: Optional[str] = None
     western_name: Optional[str] = None
     birthday: Optional[date] = None
+    birthday_lunar: Optional[date] = None
+    is_lunar: Optional[bool] = None
     email: Optional[str] = None
     country_code: Optional[str] = None
     phone_number: Optional[str] = None
@@ -116,7 +123,12 @@ def register(body: RegisterRequest, response: Response, db: Session = Depends(ge
         last_name=body.last_name,
         western_name=body.western_name,
         birthday=body.birthday,
+        birthday_lunar=body.birthday_lunar,
+        is_lunar=body.is_lunar,
         email=body.email,
+        country_code=body.country_code,
+        phone_number=body.phone_number,
+        profile_picture_url=body.profile_picture_url,
     )
     db.add(user)
     db.flush()
@@ -150,12 +162,19 @@ def update_profile(
         conflict = db.query(User).filter(User.email == body.email, User.id != current_user.id).first()
         if conflict:
             raise HTTPException(400, "Email already in use.")
-    fields = ["first_name", "last_name", "western_name", "birthday",
-              "email", "country_code", "phone_number", "profile_picture_url"]
-    for f in fields:
+    str_fields = ["first_name", "last_name", "western_name",
+                  "email", "country_code", "phone_number", "profile_picture_url"]
+    date_fields = ["birthday", "birthday_lunar"]
+    for f in str_fields:
         val = getattr(body, f, None)
         if val is not None:
             setattr(current_user, f, val or None)
+    for f in date_fields:
+        val = getattr(body, f, None)
+        if val is not None:
+            setattr(current_user, f, val)
+    if body.is_lunar is not None:
+        current_user.is_lunar = body.is_lunar
     if body.password:
         current_user.hashed_password = hash_password(body.password)
     db.commit()
