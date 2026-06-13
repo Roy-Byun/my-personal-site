@@ -87,6 +87,11 @@ def _run_migrations() -> None:
     news_cols = [
         ("is_archived", "BOOLEAN DEFAULT FALSE"),
     ]
+    event_cols = [
+        ("recurrence_type",     "VARCHAR(20)"),
+        ("recurrence_interval", "INTEGER DEFAULT 1"),
+        ("recurrence_end",      "DATE"),
+    ]
     with engine.begin() as conn:
         for col, col_type in users_cols:
             try:
@@ -96,6 +101,11 @@ def _run_migrations() -> None:
         for col, col_type in news_cols:
             try:
                 conn.execute(text(f"ALTER TABLE news_articles ADD COLUMN {col} {col_type}"))
+            except Exception:
+                pass
+        for col, col_type in event_cols:
+            try:
+                conn.execute(text(f"ALTER TABLE family_events ADD COLUMN {col} {col_type}"))
             except Exception:
                 pass
 

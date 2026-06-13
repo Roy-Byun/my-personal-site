@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -13,16 +13,22 @@ from models import FamilyEvent, User
 router = APIRouter(prefix="/events", tags=["events"])
 
 EVENT_COLORS = {
-    "birthday":   "#f472b6",   # pink
-    "holiday_kr": "#ef4444",   # red
-    "holiday_sg": "#3b82f6",   # blue
-    "leave":      "#f59e0b",   # amber
-    "custom":     "#6366f1",   # indigo
+    "birthday":    "#f472b6",
+    "memorial":    "#94a3b8",
+    "anniversary": "#fb7185",
+    "holiday_kr":  "#ef4444",
+    "holiday_sg":  "#3b82f6",
+    "leave":       "#f59e0b",
+    "meeting":     "#22d3ee",
+    "school":      "#4ade80",
+    "medical":     "#34d399",
+    "travel":      "#a78bfa",
+    "custom":      "#6366f1",
 }
 
 
 class EventOut(BaseModel):
-    id: Optional[int]             # None for auto-generated entries (holidays, birthdays)
+    id: Optional[int]
     title: str
     event_date: date
     end_date: Optional[date]
@@ -31,6 +37,9 @@ class EventOut(BaseModel):
     color: Optional[str]
     linked_user_id: Optional[int]
     is_recurring: bool
+    recurrence_type: Optional[str] = None
+    recurrence_interval: Optional[int] = None
+    recurrence_end: Optional[date] = None
     is_public: bool
     created_by_id: Optional[int]
 
@@ -45,6 +54,9 @@ class EventCreate(BaseModel):
     description: Optional[str] = None
     color: Optional[str] = None
     is_public: bool = True
+    recurrence_type: Optional[str] = None
+    recurrence_interval: int = 1
+    recurrence_end: Optional[date] = None
 
 
 class EventUpdate(BaseModel):
@@ -55,21 +67,78 @@ class EventUpdate(BaseModel):
     description: Optional[str] = None
     color: Optional[str] = None
     is_public: Optional[bool] = None
+    recurrence_type: Optional[str] = None
+    recurrence_interval: Optional[int] = None
+    recurrence_end: Optional[date] = None
+
+
+def _advance_date(d: date, rtype: str, interval: int) -> date:
+    from dateutil.relativedelta import relativedelta
+    if rtype == "daily":
+        return d + timedelta(days=interval)
+    elif rtype == "weekly":
+        return d + timedelta(weeks=interval)
+    elif rtype == "monthly":
+        return d + relativedelta(months=interval)
+    elif rtype == "yearly":
+        return d + relativedelta(years=interval)
+    return d + timedelta(days=1)
+
+
+def _expand_recurring(event: FamilyEvent, start: date, end: date) -> list[dict]:
+    """Generate all occurrences of a recurring event within [start, end]."""
+    results = []
+    interval = event.recurrence_interval or 1
+    current = event.event_date
+    iterations = 0
+
+    # Fast-forward to first occurrence >= start
+    while current < start and iterations < 10000:
+        next_d = _advance_date(current, event.recurrence_type, interval)
+        if next_d <= current:
+            break
+        current = next_d
+        iterations += 1
+
+    while current <= end and iterations < 10000:
+        iterations += 1
+        if event.recurrence_end and current > event.recurrence_end:
+            break
+        results.append({
+            "id": event.id,
+            "title": event.title,
+            "event_date": current,
+            "end_date": event.end_date,
+            "event_type": event.event_type,
+            "description": event.description,
+            "color": event.color or EVENT_COLORS.get(event.event_type, EVENT_COLORS["custom"]),
+            "linked_user_id": event.linked_user_id,
+            "is_recurring": True,
+            "recurrence_type": event.recurrence_type,
+            "recurrence_interval": event.recurrence_interval,
+            "recurrence_end": event.recurrence_end,
+            "is_public": event.is_public,
+            "created_by_id": event.created_by_id,
+        })
+        next_d = _advance_date(current, event.recurrence_type, interval)
+        if next_d <= current:
+            break
+        current = next_d
+
+    return results
 
 
 def _birthday_events_in_range(db: Session, start: date, end: date) -> list[dict]:
-    """Generate virtual birthday events from user profiles within the date range."""
     from models import User as UserModel
     users = db.query(UserModel).filter(UserModel.birthday != None).all()
     events = []
     for u in users:
         bday: date = u.birthday
-        # Try this year and next year
         for year in range(start.year, end.year + 1):
             try:
                 this_year = bday.replace(year=year)
             except ValueError:
-                continue  # Feb 29 in non-leap year
+                continue
             if start <= this_year <= end:
                 name = (
                     f"{u.last_name or ''}{u.first_name or ''}".strip()
@@ -87,6 +156,9 @@ def _birthday_events_in_range(db: Session, start: date, end: date) -> list[dict]
                     "color": EVENT_COLORS["birthday"],
                     "linked_user_id": u.id,
                     "is_recurring": True,
+                    "recurrence_type": "yearly",
+                    "recurrence_interval": 1,
+                    "recurrence_end": None,
                     "is_public": True,
                     "created_by_id": None,
                 })
@@ -110,6 +182,9 @@ def _holiday_events_in_range(start: date, end: date) -> list[dict]:
                 "color": EVENT_COLORS[etype],
                 "linked_user_id": None,
                 "is_recurring": True,
+                "recurrence_type": "yearly",
+                "recurrence_interval": 1,
+                "recurrence_end": None,
                 "is_public": True,
                 "created_by_id": None,
             })
@@ -128,37 +203,133 @@ def list_events(
     if end is None:
         end = today + timedelta(days=60)
 
-    # DB events
-    db_events = (
+    result: list[dict] = []
+
+    # Non-recurring DB events in range
+    non_recurring = (
         db.query(FamilyEvent)
-        .filter(FamilyEvent.event_date >= start, FamilyEvent.event_date <= end)
-        .order_by(FamilyEvent.event_date)
+        .filter(
+            FamilyEvent.recurrence_type == None,
+            FamilyEvent.event_date >= start,
+            FamilyEvent.event_date <= end,
+        )
         .all()
     )
-    result: list[dict] = [
-        {
-            "id": e.id,
-            "title": e.title,
-            "event_date": e.event_date,
-            "end_date": e.end_date,
-            "event_type": e.event_type,
+    for e in non_recurring:
+        result.append({
+            "id": e.id, "title": e.title, "event_date": e.event_date,
+            "end_date": e.end_date, "event_type": e.event_type,
             "description": e.description,
             "color": e.color or EVENT_COLORS.get(e.event_type, EVENT_COLORS["custom"]),
-            "linked_user_id": e.linked_user_id,
-            "is_recurring": e.is_recurring,
-            "is_public": e.is_public,
-            "created_by_id": e.created_by_id,
-        }
-        for e in db_events
-    ]
+            "linked_user_id": e.linked_user_id, "is_recurring": e.is_recurring,
+            "recurrence_type": None, "recurrence_interval": None, "recurrence_end": None,
+            "is_public": e.is_public, "created_by_id": e.created_by_id,
+        })
 
-    # Auto-generated entries
+    # Recurring DB events that may have occurrences in [start, end]
+    recurring = (
+        db.query(FamilyEvent)
+        .filter(
+            FamilyEvent.recurrence_type != None,
+            FamilyEvent.event_date <= end,
+        )
+        .filter(
+            (FamilyEvent.recurrence_end == None) | (FamilyEvent.recurrence_end >= start)
+        )
+        .all()
+    )
+    for e in recurring:
+        result.extend(_expand_recurring(e, start, end))
+
     result.extend(_birthday_events_in_range(db, start, end))
     result.extend(_holiday_events_in_range(start, end))
 
-    # Sort by date
     result.sort(key=lambda x: x["event_date"])
     return result
+
+
+# Declared before /{event_id} to avoid route shadowing
+@router.post("/import-ics", status_code=200)
+async def import_ics(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    content = await file.read()
+    try:
+        from icalendar import Calendar as ICalCalendar
+        cal = ICalCalendar.from_ical(content)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid .ics file: {e}")
+
+    imported = 0
+    skipped = 0
+
+    for component in cal.walk():
+        if component.name != "VEVENT":
+            continue
+
+        summary = str(component.get("SUMMARY", "")).strip()
+        if not summary:
+            skipped += 1
+            continue
+
+        dtstart = component.get("DTSTART")
+        if not dtstart:
+            skipped += 1
+            continue
+
+        raw_start = dtstart.dt
+        ev_date = raw_start.date() if isinstance(raw_start, datetime) else raw_start
+
+        dtend = component.get("DTEND")
+        end_date_val = None
+        if dtend:
+            raw_end = dtend.dt
+            end_date_val = raw_end.date() if isinstance(raw_end, datetime) else raw_end
+            if end_date_val == ev_date:
+                end_date_val = None
+
+        desc_raw = component.get("DESCRIPTION")
+        description = str(desc_raw).strip() if desc_raw else None
+
+        recurrence_type = None
+        recurrence_interval = 1
+        recurrence_end = None
+
+        rrule = component.get("RRULE")
+        if rrule:
+            freq_list = rrule.get("FREQ", [])
+            if freq_list:
+                freq = str(freq_list[0]).lower()
+                recurrence_type = {"daily": "daily", "weekly": "weekly",
+                                   "monthly": "monthly", "yearly": "yearly"}.get(freq)
+            interval_list = rrule.get("INTERVAL", [])
+            if interval_list:
+                recurrence_interval = int(interval_list[0])
+            until_list = rrule.get("UNTIL", [])
+            if until_list:
+                u = until_list[0]
+                recurrence_end = u.date() if isinstance(u, datetime) else u
+
+        db.add(FamilyEvent(
+            title=summary,
+            event_date=ev_date,
+            end_date=end_date_val,
+            event_type="custom",
+            description=description,
+            color=EVENT_COLORS["custom"],
+            is_recurring=recurrence_type is not None,
+            recurrence_type=recurrence_type,
+            recurrence_interval=recurrence_interval,
+            recurrence_end=recurrence_end,
+            is_public=True,
+            created_by_id=current_user.id,
+        ))
+        imported += 1
+
+    db.commit()
+    return {"imported": imported, "skipped": skipped}
 
 
 @router.post("", response_model=EventOut, status_code=status.HTTP_201_CREATED)
@@ -169,8 +340,17 @@ def create_event(
 ):
     color = body.color or EVENT_COLORS.get(body.event_type, EVENT_COLORS["custom"])
     event = FamilyEvent(
-        **body.model_dump(),
+        title=body.title,
+        event_date=body.event_date,
+        end_date=body.end_date,
+        event_type=body.event_type,
+        description=body.description,
         color=color,
+        is_public=body.is_public,
+        is_recurring=body.recurrence_type is not None,
+        recurrence_type=body.recurrence_type,
+        recurrence_interval=body.recurrence_interval,
+        recurrence_end=body.recurrence_end,
         created_by_id=current_user.id,
     )
     db.add(event)
@@ -181,6 +361,9 @@ def create_event(
         "end_date": event.end_date, "event_type": event.event_type,
         "description": event.description, "color": event.color,
         "linked_user_id": event.linked_user_id, "is_recurring": event.is_recurring,
+        "recurrence_type": event.recurrence_type,
+        "recurrence_interval": event.recurrence_interval,
+        "recurrence_end": event.recurrence_end,
         "is_public": event.is_public, "created_by_id": event.created_by_id,
     }
 
@@ -197,8 +380,11 @@ def update_event(
         raise HTTPException(404, "Event not found")
     if event.created_by_id != current_user.id and current_user.role != "admin":
         raise HTTPException(403, "Not allowed")
-    for field, val in body.model_dump(exclude_none=True).items():
+    updates = body.model_dump(exclude_none=True)
+    for field, val in updates.items():
         setattr(event, field, val)
+    if "recurrence_type" in updates:
+        event.is_recurring = updates["recurrence_type"] is not None
     db.commit()
     db.refresh(event)
     return {
@@ -206,6 +392,9 @@ def update_event(
         "end_date": event.end_date, "event_type": event.event_type,
         "description": event.description, "color": event.color,
         "linked_user_id": event.linked_user_id, "is_recurring": event.is_recurring,
+        "recurrence_type": event.recurrence_type,
+        "recurrence_interval": event.recurrence_interval,
+        "recurrence_end": event.recurrence_end,
         "is_public": event.is_public, "created_by_id": event.created_by_id,
     }
 

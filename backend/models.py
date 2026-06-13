@@ -111,6 +111,9 @@ class FamilyEvent(Base):
     color = Column(String(20), nullable=True)
     linked_user_id = Column(Integer, nullable=True)   # birthday owner
     is_recurring = Column(Boolean, nullable=False, default=False)
+    recurrence_type = Column(String(20), nullable=True)      # "daily"|"weekly"|"monthly"|"yearly"
+    recurrence_interval = Column(Integer, nullable=True, default=1)
+    recurrence_end = Column(Date, nullable=True)
     is_public = Column(Boolean, nullable=False, default=True)
     created_by_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
