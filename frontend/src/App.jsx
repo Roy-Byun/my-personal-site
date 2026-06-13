@@ -374,6 +374,7 @@ function AppInner() {
       <HomePage
         onViewAllNews={() => navigate("news-all")}
         onViewAllPosts={() => navigate("family")}
+        onViewAllEvents={() => navigate("family")}
       />
     );
   };

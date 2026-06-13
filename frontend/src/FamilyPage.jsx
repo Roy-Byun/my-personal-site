@@ -4,6 +4,7 @@ import { useAuth } from "./AuthContext";
 import { flagEmoji } from "./countries";
 import FamilyPostsWidget from "./FamilyPostsWidget";
 import FamilyCalendarFull from "./FamilyCalendarFull";
+import FamilyCalendarWidget from "./FamilyCalendarWidget";
 import InfoTooltip from "./InfoTooltip";
 import { useT } from "./i18n";
 
@@ -165,12 +166,17 @@ const FamilyPage = ({ setCurrentPage }) => {
         )}
       </div>
 
-      {/* Calendar + Family News side by side */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 mb-10">
-        <div className="lg:col-span-7">
-          <FamilyCalendarFull />
+      {/* Big calendar — full width, add-event lives here */}
+      <div className="mb-5">
+        <FamilyCalendarFull />
+      </div>
+
+      {/* Upcoming Events + Family News — scrollable side-by-side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-10">
+        <div className="h-[420px]">
+          <FamilyCalendarWidget title="Upcoming Events" />
         </div>
-        <div className="lg:col-span-5">
+        <div className="h-[420px]">
           <FamilyPostsWidget />
         </div>
       </div>

@@ -6,7 +6,7 @@ import FamilyPostsPreview from "./FamilyPostsPreview";
 
 const WIDGET_H = "min-h-[480px]";
 
-const HomePage = ({ onViewAllNews, onViewAllPosts }) => (
+const HomePage = ({ onViewAllNews, onViewAllPosts, onViewAllEvents }) => (
   <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
     {/* Row 1: News (wider) + Announcements (narrower) */}
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 mb-5">
@@ -18,10 +18,10 @@ const HomePage = ({ onViewAllNews, onViewAllPosts }) => (
       </div>
     </div>
 
-    {/* Row 2: Family Calendar (narrower) + Family Posts preview (wider) */}
+    {/* Row 2: Family Calendar overview + Family Posts preview */}
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
       <div className={`lg:col-span-4 ${WIDGET_H}`}>
-        <FamilyCalendarWidget />
+        <FamilyCalendarWidget onViewMore={onViewAllEvents} />
       </div>
       <div className={`lg:col-span-8 ${WIDGET_H}`}>
         <FamilyPostsPreview onViewAll={onViewAllPosts} />
