@@ -255,6 +255,9 @@ async def import_ics(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if not (file.filename or "").lower().endswith(".ics"):
+        raise HTTPException(400, "Only .ics files are accepted")
+
     content = await file.read()
     try:
         from icalendar import Calendar as ICalCalendar

@@ -19,7 +19,7 @@ const TYPE_META = {
 };
 
 const USER_EVENT_TYPES = [
-  "birthday", "memorial", "anniversary", "leave",
+  "memorial", "anniversary", "leave",
   "meeting", "school", "medical", "travel", "custom",
 ];
 
