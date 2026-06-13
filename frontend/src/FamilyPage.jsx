@@ -129,6 +129,7 @@ const FamilyPage = ({ setCurrentPage }) => {
 
       {/* Members section */}
       <div className="mb-10">
+        {/* Header row */}
         <div className="flex items-center justify-between gap-3 mb-6">
           <div className="flex items-center gap-3">
             <Users className="w-5 h-5 text-indigo-500" />
@@ -136,7 +137,9 @@ const FamilyPage = ({ setCurrentPage }) => {
               {t("Family Members")}
               <InfoTooltip text="가족 구성원 목록입니다. 로그인한 가족만 볼 수 있어요. (Visible to logged-in family members only)" />
             </h2>
-            <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{members.length} members</span>
+            <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+              {members.length} members
+            </span>
           </div>
           {setCurrentPage && (
             <button
@@ -146,12 +149,14 @@ const FamilyPage = ({ setCurrentPage }) => {
               <GitFork className="w-4 h-4" /> Family Tree
             </button>
           )}
+        </div>
 
+        {/* Member grid */}
         {!user ? (
           <p className="text-slate-400 text-sm">Please log in to view family members.</p>
         ) : loading ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 animate-pulse">
-            {[1,2,3,4].map(i => <div key={i} className="h-52 bg-slate-100 rounded-2xl" />)}
+            {[1, 2, 3, 4].map(i => <div key={i} className="h-52 bg-slate-100 rounded-2xl" />)}
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
