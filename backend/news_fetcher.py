@@ -20,47 +20,79 @@ CATEGORIES = [
 
 _KEYWORDS: dict[str, list[str]] = {
     "Politics": [
+        # English
         "government", "election", "president", "congress", "senate",
         "parliament", "policy", "democrat", "republican", "legislation",
         "minister", "prime minister", "white house", "vote", "ballot",
         "diplomacy", "sanctions", "geopolitics", "military", "war",
+        # Korean
+        "정부", "선거", "대통령", "국회", "정책", "의원", "여당", "야당",
+        "외교", "국방", "법안", "조례", "탄핵", "총리", "장관", "청와대",
     ],
     "Finance": [
+        # English
         "stock", "market", "economy", "gdp", "inflation", "federal reserve",
         "interest rate", "nasdaq", "dow jones", "crypto", "bitcoin",
         "ethereum", "investment", "banking", "finance", "recession",
         "revenue", "earnings", "ipo", "hedge fund", "bonds", "trade deficit",
+        # Korean
+        "주식", "경제", "시장", "금리", "인플레이션", "증시", "투자", "부동산",
+        "환율", "코인", "비트코인", "금융", "채권", "펀드", "기업공개", "수출",
     ],
     "Technology": [
+        # English
         "tech", "artificial intelligence", " ai ", "software", "hardware",
         "apple", "google", "microsoft", "meta", "amazon", "startup",
         "cybersecurity", "robot", "semiconductor", "chip", "cloud computing",
         "smartphone", "electric vehicle", "autonomous", "machine learning",
+        # Korean
+        "기술", "인공지능", "소프트웨어", "반도체", "스마트폰", "앱", "클라우드",
+        "로봇", "전기차", "자율주행", "딥러닝", "스타트업", "플랫폼", "데이터",
     ],
     "Science": [
+        # English
         "science", "research", "discovery", "space", "nasa", "climate",
         "environment", "biology", "physics", "chemistry", "astronomy",
         "carbon emissions", "species", "gene", "dna", "experiment",
+        # Korean
+        "과학", "연구", "우주", "기후", "환경", "발견", "실험", "생물",
+        "물리", "화학", "천문", "유전자", "탄소", "탐사",
     ],
     "Health": [
+        # English
         "health", "medical", "hospital", "drug", "treatment", "patient",
         "doctor", "surgery", "mental health", "covid", "cancer", "fda",
         "vaccine", "pandemic", "disease", "obesity", "nutrition", "clinical",
+        # Korean
+        "건강", "의료", "병원", "치료", "환자", "의사", "코로나", "암",
+        "백신", "수술", "정신건강", "약물", "질병", "예방",
     ],
     "Sports": [
+        # English
         "sport", "football", "basketball", "baseball", "soccer", "tennis",
         "golf", "nba", "nfl", "mlb", "olympic", "athlete", "championship",
         "tournament", "league", "coach", "transfer", "match", "goal",
+        # Korean
+        "스포츠", "축구", "야구", "농구", "올림픽", "선수", "경기", "리그",
+        "골", "감독", "우승", "토너먼트", "골프", "테니스", "배구",
     ],
     "Entertainment": [
+        # English
         "movie", "film", "music", "celebrity", "actor", "singer",
         "award", "oscar", "grammy", "netflix", "hollywood", "streaming",
         "album", "concert", "box office", "tv show", "series", "trailer",
+        # Korean
+        "영화", "음악", "연예", "배우", "가수", "시상식", "드라마", "아이돌",
+        "케이팝", "k팝", "웹툰", "예능", "앨범", "공연", "오디션", "넷플릭스",
     ],
     "Social": [
+        # English
         "social", "community", "education", "culture", "lifestyle",
         "travel", "food", "fashion", "art", "immigration", "housing",
         "poverty", "inequality", "protest", "civil rights", "diversity",
+        # Korean
+        "사회", "교육", "문화", "여행", "음식", "패션", "예술", "이민",
+        "주택", "복지", "인권", "시위", "빈곤", "불평등", "가족",
     ],
 }
 
@@ -261,7 +293,8 @@ def archive_article(
         archive_note=note,
     )
     db.add(archived)
-    db.delete(article)
+    # Mark original as archived so it persists on homepage and is skipped by cleanup
+    article.is_archived = True
     db.commit()
     db.refresh(archived)
     return archived
@@ -364,6 +397,7 @@ def cleanup_old_articles(db: Session) -> None:
         .filter(
             NewsArticle.fetched_at < cutoff,
             NewsArticle.is_manual == False,
+            NewsArticle.is_archived == False,
         )
         .delete(synchronize_session=False)
     )

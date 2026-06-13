@@ -58,6 +58,23 @@ def get_current_user(
     return user
 
 
+def get_optional_user(
+    access_token: Optional[str] = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """Like get_current_user but returns None instead of raising 401."""
+    if not access_token:
+        return None
+    try:
+        payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            return None
+        return db.query(User).filter(User.id == int(user_id)).first()
+    except Exception:
+        return None
+
+
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "admin":
         raise HTTPException(

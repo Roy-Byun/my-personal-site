@@ -19,6 +19,7 @@ import SystemHealthPage from "./SystemHealthPage";
 import UsersPage from "./UsersPage";
 import NewsSection from "./NewsSection";
 import NewsAdminPage from "./NewsAdminPage";
+import HomePage from "./HomePage";
 
 const Navigation = ({
   currentPage,
@@ -215,7 +216,10 @@ const App = () => {
     if (currentPage === "news-admin" && user?.role === "admin") {
       return <NewsAdminPage />;
     }
-    return <NewsSection />;
+    if (currentPage === "news-all") {
+      return <NewsSection />;
+    }
+    return <HomePage onViewAllNews={() => setCurrentPage("news-all")} />;
   };
 
   return (

@@ -12,6 +12,7 @@ from models import User
 from news_fetcher import cleanup_old_articles, run_fetch_cycle
 from routers import auth, health, system, users
 from routers import news as news_router
+from routers import announcements, events, posts
 
 logging.basicConfig(level=logging.INFO)
 
@@ -62,8 +63,8 @@ def startup() -> None:
     _run_migrations()
     _seed_admin()
 
-    _scheduler.add_job(_news_fetch_job, "interval", minutes=30, id="news_fetch", replace_existing=True)
-    _scheduler.add_job(_news_cleanup_job, "interval", hours=24, id="news_cleanup", replace_existing=True)
+    _scheduler.add_job(_news_fetch_job,   "interval", minutes=30, id="news_fetch",   replace_existing=True)
+    _scheduler.add_job(_news_cleanup_job, "interval", hours=24,   id="news_cleanup", replace_existing=True)
     _scheduler.start()
 
 
@@ -73,7 +74,7 @@ def shutdown() -> None:
 
 
 def _run_migrations() -> None:
-    users_columns = [
+    users_cols = [
         ("first_name",          "VARCHAR"),
         ("last_name",           "VARCHAR"),
         ("western_name",        "VARCHAR"),
@@ -83,10 +84,18 @@ def _run_migrations() -> None:
         ("phone_number",        "VARCHAR(20)"),
         ("profile_picture_url", "TEXT"),
     ]
+    news_cols = [
+        ("is_archived", "BOOLEAN DEFAULT FALSE"),
+    ]
     with engine.begin() as conn:
-        for col, col_type in users_columns:
+        for col, col_type in users_cols:
             try:
                 conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {col_type}"))
+            except Exception:
+                pass
+        for col, col_type in news_cols:
+            try:
+                conn.execute(text(f"ALTER TABLE news_articles ADD COLUMN {col} {col_type}"))
             except Exception:
                 pass
 
@@ -117,3 +126,6 @@ app.include_router(auth.router)
 app.include_router(system.router)
 app.include_router(users.router)
 app.include_router(news_router.router)
+app.include_router(announcements.router)
+app.include_router(events.router)
+app.include_router(posts.router)

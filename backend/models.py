@@ -64,6 +64,7 @@ class NewsArticle(Base):
     published_at = Column(DateTime, nullable=True)
     fetched_at = Column(DateTime, default=datetime.utcnow, index=True)
     is_manual = Column(Boolean, nullable=False, default=False)
+    is_archived = Column(Boolean, nullable=False, default=False)
 
 
 class ArchivedArticle(Base):
@@ -82,3 +83,58 @@ class ArchivedArticle(Base):
     archived_at = Column(DateTime, default=datetime.utcnow, index=True)
     archive_index = Column(Integer, nullable=True)
     archive_note = Column(String, nullable=True)
+
+
+class Announcement(Base):
+    __tablename__ = "announcements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=True)
+    link = Column(String, nullable=True)
+    priority = Column(String, nullable=False, default="normal")  # "normal" | "important"
+    created_by = Column(String, nullable=True)                   # username of creator
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+
+class FamilyEvent(Base):
+    __tablename__ = "family_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    event_date = Column(Date, nullable=False, index=True)
+    end_date = Column(Date, nullable=True)
+    event_type = Column(String, nullable=False, default="custom")
+    # "birthday" | "holiday_kr" | "holiday_sg" | "leave" | "custom"
+    description = Column(Text, nullable=True)
+    color = Column(String(20), nullable=True)
+    linked_user_id = Column(Integer, nullable=True)   # birthday owner
+    is_recurring = Column(Boolean, nullable=False, default=False)
+    is_public = Column(Boolean, nullable=False, default=True)
+    created_by_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FamilyPost(Base):
+    __tablename__ = "family_posts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=True)
+    content = Column(Text, nullable=False)
+    image_url = Column(String, nullable=True)
+    post_type = Column(String, nullable=False, default="update")
+    # "achievement" | "milestone" | "memorial" | "update"
+    author_id = Column(Integer, nullable=False)
+    author_name = Column(String, nullable=True)      # denormalized for display
+    is_pinned = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PostReaction(Base):
+    __tablename__ = "post_reactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, nullable=False)
+    emoji = Column(String(10), nullable=False)  # ❤️ 🎉 😢 💪 🙏 😊
