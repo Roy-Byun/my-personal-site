@@ -1,11 +1,15 @@
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
+import logging
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from auth_utils import get_current_user, get_optional_user
+
+log = logging.getLogger(__name__)
 from database import get_db
 from holidays import HOLIDAYS
 from models import FamilyEvent, User
@@ -205,43 +209,70 @@ def list_events(
 
     result: list[dict] = []
 
-    # Non-recurring DB events in range
-    non_recurring = (
-        db.query(FamilyEvent)
-        .filter(
-            FamilyEvent.recurrence_type == None,
-            FamilyEvent.event_date >= start,
-            FamilyEvent.event_date <= end,
+    # DB events — fall back to simple date filter if recurrence column not yet migrated
+    try:
+        non_recurring = (
+            db.query(FamilyEvent)
+            .filter(
+                FamilyEvent.recurrence_type == None,
+                FamilyEvent.event_date >= start,
+                FamilyEvent.event_date <= end,
+            )
+            .all()
         )
-        .all()
-    )
-    for e in non_recurring:
-        result.append({
-            "id": e.id, "title": e.title, "event_date": e.event_date,
-            "end_date": e.end_date, "event_type": e.event_type,
-            "description": e.description,
-            "color": e.color or EVENT_COLORS.get(e.event_type, EVENT_COLORS["custom"]),
-            "linked_user_id": e.linked_user_id, "is_recurring": e.is_recurring,
-            "recurrence_type": None, "recurrence_interval": None, "recurrence_end": None,
-            "is_public": e.is_public, "created_by_id": e.created_by_id,
-        })
+        for e in non_recurring:
+            result.append({
+                "id": e.id, "title": e.title, "event_date": e.event_date,
+                "end_date": e.end_date, "event_type": e.event_type,
+                "description": e.description,
+                "color": e.color or EVENT_COLORS.get(e.event_type, EVENT_COLORS["custom"]),
+                "linked_user_id": e.linked_user_id, "is_recurring": e.is_recurring,
+                "recurrence_type": None, "recurrence_interval": None, "recurrence_end": None,
+                "is_public": e.is_public, "created_by_id": e.created_by_id,
+            })
 
-    # Recurring DB events that may have occurrences in [start, end]
-    recurring = (
-        db.query(FamilyEvent)
-        .filter(
-            FamilyEvent.recurrence_type != None,
-            FamilyEvent.event_date <= end,
+        recurring = (
+            db.query(FamilyEvent)
+            .filter(
+                FamilyEvent.recurrence_type != None,
+                FamilyEvent.event_date <= end,
+            )
+            .filter(
+                (FamilyEvent.recurrence_end == None) | (FamilyEvent.recurrence_end >= start)
+            )
+            .all()
         )
-        .filter(
-            (FamilyEvent.recurrence_end == None) | (FamilyEvent.recurrence_end >= start)
-        )
-        .all()
-    )
-    for e in recurring:
-        result.extend(_expand_recurring(e, start, end))
+        for e in recurring:
+            result.extend(_expand_recurring(e, start, end))
 
-    result.extend(_birthday_events_in_range(db, start, end))
+    except Exception:
+        log.exception("DB events query failed (recurrence columns may not exist yet); falling back")
+        db.rollback()
+        try:
+            all_events = (
+                db.query(FamilyEvent)
+                .filter(FamilyEvent.event_date >= start, FamilyEvent.event_date <= end)
+                .all()
+            )
+            for e in all_events:
+                result.append({
+                    "id": e.id, "title": e.title, "event_date": e.event_date,
+                    "end_date": e.end_date, "event_type": e.event_type,
+                    "description": e.description,
+                    "color": e.color or EVENT_COLORS.get(e.event_type, EVENT_COLORS["custom"]),
+                    "linked_user_id": e.linked_user_id, "is_recurring": getattr(e, "is_recurring", False),
+                    "recurrence_type": None, "recurrence_interval": None, "recurrence_end": None,
+                    "is_public": e.is_public, "created_by_id": e.created_by_id,
+                })
+        except Exception:
+            log.exception("Fallback DB events query also failed")
+
+    try:
+        result.extend(_birthday_events_in_range(db, start, end))
+    except Exception:
+        log.exception("Birthday events query failed (birthday column may not exist yet)")
+        db.rollback()
+
     result.extend(_holiday_events_in_range(start, end))
 
     result.sort(key=lambda x: x["event_date"])

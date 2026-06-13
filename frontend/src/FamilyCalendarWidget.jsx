@@ -197,7 +197,7 @@ const FamilyCalendarWidget = () => {
             {[1,2,3,4].map(i => <div key={i} className="h-10 bg-slate-50 rounded-xl" />)}
           </div>
         ) : dates.length === 0 ? (
-          <p className="text-center text-slate-400 text-sm py-8">No events in the next 60 days.</p>
+          <p className="text-center text-slate-400 text-sm py-8">No events in the next 30 days.</p>
         ) : (
           dates.map((d) => (
             <div key={d}>
