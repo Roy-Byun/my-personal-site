@@ -172,3 +172,97 @@ class PostReaction(Base):
     post_id = Column(Integer, nullable=False, index=True)
     user_id = Column(Integer, nullable=False)
     emoji = Column(String(10), nullable=False)  # ❤️ 🎉 😢 💪 🙏 😊
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    project_type = Column(String, nullable=False, default="other")   # "github" | "study" | "planning" | "other"
+    status = Column(String, nullable=False, default="active")        # "active" | "paused" | "completed" | "archived"
+
+    # GitHub integration (only relevant when project_type == "github")
+    github_repo = Column(String, nullable=True)               # "owner/repo", admin-entered
+    github_description = Column(Text, nullable=True)          # auto-synced
+    github_language = Column(String, nullable=True)           # auto-synced
+    github_stars = Column(Integer, nullable=True)              # auto-synced
+    github_last_commit_at = Column(DateTime, nullable=True)    # auto-synced
+    github_url = Column(String, nullable=True)                 # auto-synced
+    github_synced_at = Column(DateTime, nullable=True)          # last successful sync
+    github_sync_error = Column(String, nullable=True)          # admin-only visibility
+
+    external_url = Column(String, nullable=True)
+    tags = Column(String, nullable=True)                        # comma-separated
+    is_public = Column(Boolean, nullable=False, default=True)   # lets admin draft before publishing
+    sort_order = Column(Integer, nullable=False, default=0)
+
+    created_by_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ProjectTask(Base):
+    __tablename__ = "project_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default="todo")       # "todo" | "in_progress" | "done"
+    priority = Column(String, nullable=False, default="normal")   # "low" | "normal" | "high"
+    due_date = Column(Date, nullable=True)
+    position = Column(Integer, nullable=False, default=0)   # dense ordering within (project_id, status)
+
+    created_by_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class AboutProfile(Base):
+    __tablename__ = "about_profile"   # singleton row, lazily created on first GET/PUT
+
+    id = Column(Integer, primary_key=True, index=True)
+    headline = Column(String, nullable=True)
+    bio = Column(Text, nullable=True)
+    photo_url = Column(String, nullable=True)   # plain URL string, matches User.profile_picture_url convention
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ExperienceEntry(Base):
+    __tablename__ = "experience_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entry_type = Column(String, nullable=False, default="work")   # "work" | "education"
+    title = Column(String, nullable=False)
+    organization = Column(String, nullable=False)
+    location = Column(String, nullable=True)
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)   # null = ongoing / "present"
+    description = Column(Text, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GalleryPhoto(Base):
+    __tablename__ = "gallery_photos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    photo_url = Column(String, nullable=False)
+    caption = Column(String, nullable=True)
+    taken_date = Column(Date, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LifeMilestone(Base):
+    __tablename__ = "life_milestones"
+
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String, nullable=False)          # e.g. "PhD Completion"
+    target_date = Column(DateTime, nullable=False)
+    note = Column(Text, nullable=True)
+    is_featured = Column(Boolean, nullable=False, default=False)   # only one enforced True at a time (app-level)
+    created_at = Column(DateTime, default=datetime.utcnow)

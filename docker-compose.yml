@@ -34,6 +34,8 @@ services:
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - ADMIN_FULL_NAME=${ADMIN_FULL_NAME}
+      - GITHUB_USERNAME=${GITHUB_USERNAME}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
       - ALLOWED_ORIGINS=https://roika-server.hedgehog-heptatonic.ts.net
     depends_on:
       db:

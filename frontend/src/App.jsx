@@ -11,6 +11,7 @@ import {
   Newspaper,
   Settings,
   User,
+  UserCircle,
   UserCog,
   Users,
   X,
@@ -28,6 +29,9 @@ import HomePage from "./HomePage";
 import FamilyPage from "./FamilyPage";
 import FamilyTreePage from "./FamilyTreePage";
 import ProjectsPage from "./ProjectsPage";
+import ProjectDetailPage from "./ProjectDetailPage";
+import TaskTrackingPage from "./TaskTrackingPage";
+import AboutMePage from "./AboutMePage";
 
 function LangToggle() {
   const { lang, setLang } = useT();
@@ -44,15 +48,18 @@ function LangToggle() {
 }
 
 export const PAGE_LABELS = {
-  home:         "Home",
-  family:       "Family",
-  "family-tree":"Family Tree",
-  projects:     "Projects",
-  profile:      "My Profile",
-  "news-all":   "News",
-  "sys-health": "System Health",
-  users:        "User Management",
-  "news-admin": "News Management",
+  home:            "Home",
+  family:          "Family",
+  "family-tree":   "Family Tree",
+  projects:        "Projects",
+  "project-detail":"Project",
+  "task-tracking": "Task Tracking",
+  about:           "About Me",
+  profile:         "My Profile",
+  "news-all":      "News",
+  "sys-health":    "System Health",
+  users:           "User Management",
+  "news-admin":    "News Management",
 };
 
 // ── Page banner (dark) ───────────────────────────────────────────────────────
@@ -136,6 +143,12 @@ const Navigation = ({
         className={`hover:text-indigo-600 flex items-center gap-1 ${isMobile ? "w-full py-2" : ""}`}
       >
         <Briefcase className="w-4 h-4" /> {t("Projects")}
+      </button>
+      <button
+        onClick={() => { navigate("about"); setMobileOpen(false); }}
+        className={`hover:text-indigo-600 flex items-center gap-1 ${isMobile ? "w-full py-2" : ""}`}
+      >
+        <UserCircle className="w-4 h-4" /> {t("About Me")}
       </button>
       <button
         onClick={() => { navigate("family"); setMobileOpen(false); }}
@@ -287,6 +300,7 @@ function AppInner() {
   // Navigation history stack
   const [pageHistory, setPageHistory] = useState(["home"]);
   const currentPage = pageHistory[pageHistory.length - 1];
+  const [selectedProjectId, setSelectedProjectId] = useState(null);
 
   function navigate(page) {
     setPageHistory(h => {
@@ -369,7 +383,17 @@ function AppInner() {
     if (currentPage === "news-all")    return <NewsSection />;
     if (currentPage === "family")      return <FamilyPage setCurrentPage={navigate} />;
     if (currentPage === "family-tree") return <FamilyTreePage />;
-    if (currentPage === "projects")    return <ProjectsPage />;
+    if (currentPage === "projects")    return (
+      <ProjectsPage
+        onSelectProject={(id) => { setSelectedProjectId(id); navigate("project-detail"); }}
+        onViewTaskTracking={() => navigate("task-tracking")}
+      />
+    );
+    if (currentPage === "project-detail")
+      return <ProjectDetailPage projectId={selectedProjectId} onBack={() => navigate("projects")} />;
+    if (currentPage === "task-tracking" && user?.role === "admin")
+      return <TaskTrackingPage onBack={() => navigate("projects")} />;
+    if (currentPage === "about")       return <AboutMePage />;
     return (
       <HomePage
         onViewAllNews={() => navigate("news-all")}

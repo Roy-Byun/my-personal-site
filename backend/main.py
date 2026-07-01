@@ -8,11 +8,13 @@ from sqlalchemy import text
 
 from auth_utils import hash_password
 from database import Base, SessionLocal, engine
+from github_client import sync_all_github_projects
 from models import User
 from news_fetcher import cleanup_old_articles, run_fetch_cycle
 from routers import auth, health, system, users
 from routers import news as news_router
-from routers import announcements, events, family_tree, invites, posts, utils as utils_router
+from routers import tasks as tasks_router
+from routers import about, announcements, events, family_tree, invites, posts, projects, utils as utils_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -57,6 +59,14 @@ def _news_cleanup_job() -> None:
         db.close()
 
 
+def _github_sync_job() -> None:
+    db = SessionLocal()
+    try:
+        sync_all_github_projects(db)
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -65,6 +75,7 @@ def startup() -> None:
 
     _scheduler.add_job(_news_fetch_job,   "interval", minutes=30, id="news_fetch",   replace_existing=True)
     _scheduler.add_job(_news_cleanup_job, "interval", hours=24,   id="news_cleanup", replace_existing=True)
+    _scheduler.add_job(_github_sync_job,  "interval", minutes=60, id="github_sync",  replace_existing=True)
     _scheduler.start()
 
 
@@ -137,3 +148,6 @@ app.include_router(news_router.router)
 app.include_router(announcements.router)
 app.include_router(events.router)
 app.include_router(posts.router)
+app.include_router(projects.router)
+app.include_router(tasks_router.router)
+app.include_router(about.router)
