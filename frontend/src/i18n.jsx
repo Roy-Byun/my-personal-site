@@ -5,6 +5,7 @@ const KO = {
   "Home": "홈",
   "Family": "가족",
   "Projects": "프로젝트",
+  "Finance": "재정",
   "About Me": "소개",
   "Task Tracking": "작업 현황",
   "To Do": "할 일",

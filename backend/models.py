@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Column, Date, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, Integer, String, Text
 from database import Base
 
 
@@ -265,4 +265,126 @@ class LifeMilestone(Base):
     target_date = Column(DateTime, nullable=False)
     note = Column(Text, nullable=True)
     is_featured = Column(Boolean, nullable=False, default=False)   # only one enforced True at a time (app-level)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ── Finance Tracker (admin-only) ──────────────────────────────────────────────
+# Design rules (from the personal-finance baseline doc):
+#   * Store native-currency amounts first; currency conversions are derived
+#     values that always carry the FX rate + timestamp used.
+#   * Keep pending and settled transactions separate — never mix in a total.
+#   * Investment performance comes from FinanceValuation.total_return (the
+#     platform's reported Total Return), never inferred from payouts, and
+#     payouts are never added on top of a Total Return that already includes
+#     them.
+#   * The savings goal is a deadline/savings metric, kept separate from
+#     per-account performance.
+
+
+class FinanceProfile(Base):
+    __tablename__ = "finance_profile"   # singleton row, lazily created on first GET/PUT
+
+    id = Column(Integer, primary_key=True, index=True)
+    base_currency = Column(String(3), nullable=False, default="SGD")   # reporting currency
+    goal_currency = Column(String(3), nullable=False, default="KRW")   # denomination of the goal
+    tax_resident = Column(String, nullable=True)                       # e.g. "Singapore"
+
+    # Monthly budget assumptions (editable without rewriting history)
+    monthly_income = Column(Float, nullable=True)
+    income_currency = Column(String(3), nullable=True, default="SGD")
+    tax_reserve = Column(Float, nullable=True)                         # monthly provision
+    personal_allowance_min = Column(Float, nullable=True)
+    personal_allowance_max = Column(Float, nullable=True)
+
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceGoal(Base):
+    __tablename__ = "finance_goals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String, nullable=False)                    # e.g. "National Service fund"
+    target_amount = Column(Float, nullable=False)
+    target_currency = Column(String(3), nullable=False, default="KRW")
+    target_date = Column(Date, nullable=True)
+    note = Column(Text, nullable=True)
+    is_primary = Column(Boolean, nullable=False, default=False)   # only one enforced True (app-level)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceAccount(Base):
+    __tablename__ = "finance_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)                     # e.g. "Mari Invest Income"
+    institution = Column(String, nullable=True)               # e.g. "Mari" / "DBS"
+    account_type = Column(String, nullable=False, default="cash")   # "cash" | "investment"
+    currency = Column(String(3), nullable=False, default="SGD")
+
+    # Roles used by the dashboard to split liquid vs market-risk exposure
+    risk_role = Column(String, nullable=True)        # "liquid" | "low_risk" | "market"
+    liquidity_role = Column(String, nullable=True)   # free-text / same vocabulary as risk_role
+
+    planned_monthly_contribution = Column(Float, nullable=True)
+    contribution_currency = Column(String(3), nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceTransaction(Base):
+    __tablename__ = "finance_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Nullable: income/spend/tax are cash-flow events that need not belong to an account.
+    account_id = Column(Integer, nullable=True, index=True)
+    date = Column(Date, nullable=False, index=True)
+    # "deposit"|"invest"|"withdraw"|"payout"|"income"|"spend"|"tax"|"transfer"
+    type = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
+    currency = Column(String(3), nullable=False, default="SGD")
+    status = Column(String, nullable=False, default="settled")   # "pending" | "settled"
+    category = Column(String, nullable=True)                     # free-text bucket for spend/income
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceValuation(Base):
+    __tablename__ = "finance_valuations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, nullable=False, index=True)
+    as_of = Column(Date, nullable=False, index=True)
+    market_value = Column(Float, nullable=False)
+    currency = Column(String(3), nullable=False, default="SGD")
+    total_return = Column(Float, nullable=True)      # platform-reported, already includes payouts
+    return_percent = Column(Float, nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceAllocation(Base):
+    __tablename__ = "finance_allocations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, nullable=False, index=True)
+    as_of = Column(Date, nullable=False, index=True)
+    asset_class = Column(String, nullable=False)     # "equity" | "fixed_income" | "cash"
+    percentage = Column(Float, nullable=False)       # 0–100
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FxRate(Base):
+    __tablename__ = "fx_rates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    base = Column(String(3), nullable=False, index=True)    # e.g. "USD"
+    quote = Column(String(3), nullable=False, index=True)   # e.g. "SGD"  → 1 base = rate quote
+    rate = Column(Float, nullable=False)
+    as_of = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    source = Column(String, nullable=False, default="live")  # "live" | "manual"
     created_at = Column(DateTime, default=datetime.utcnow)
