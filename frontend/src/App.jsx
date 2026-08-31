@@ -14,6 +14,7 @@ import {
   UserCircle,
   UserCog,
   Users,
+  Wallet,
   X,
 } from "lucide-react";
 import { useAuth } from "./AuthContext";
@@ -32,6 +33,7 @@ import ProjectsPage from "./ProjectsPage";
 import ProjectDetailPage from "./ProjectDetailPage";
 import TaskTrackingPage from "./TaskTrackingPage";
 import AboutMePage from "./AboutMePage";
+import FinancePage from "./FinancePage";
 
 function LangToggle() {
   const { lang, setLang } = useT();
@@ -54,6 +56,7 @@ export const PAGE_LABELS = {
   projects:        "Projects",
   "project-detail":"Project",
   "task-tracking": "Task Tracking",
+  finance:         "Finance",
   about:           "About Me",
   profile:         "My Profile",
   "news-all":      "News",
@@ -156,6 +159,15 @@ const Navigation = ({
       >
         <Users className="w-4 h-4" /> {t("Family")}
       </button>
+
+      {user && isAdmin && (
+        <button
+          onClick={() => { navigate("finance"); setMobileOpen(false); }}
+          className={`hover:text-indigo-600 flex items-center gap-1 ${isMobile ? "w-full py-2" : ""}`}
+        >
+          <Wallet className="w-4 h-4" /> {t("Finance")}
+        </button>
+      )}
 
       {user && isAdmin && (
         <div className={`relative ${isMobile ? "w-full" : ""}`} ref={isMobile ? null : dropdownRef}>
@@ -393,6 +405,7 @@ function AppInner() {
       return <ProjectDetailPage projectId={selectedProjectId} onBack={() => navigate("projects")} />;
     if (currentPage === "task-tracking" && user?.role === "admin")
       return <TaskTrackingPage onBack={() => navigate("projects")} />;
+    if (currentPage === "finance"      && user?.role === "admin") return <FinancePage />;
     if (currentPage === "about")       return <AboutMePage />;
     return (
       <HomePage
