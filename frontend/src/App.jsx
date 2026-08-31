@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Briefcase,
@@ -22,18 +22,29 @@ import { LangProvider, useT } from "./i18n";
 import LoginPage from "./LoginPage";
 import RegisterPage from "./RegisterPage";
 import ProfilePage from "./ProfilePage";
-import SystemHealthPage from "./SystemHealthPage";
-import UsersPage from "./UsersPage";
 import NewsSection from "./NewsSection";
-import NewsAdminPage from "./NewsAdminPage";
 import HomePage from "./HomePage";
 import FamilyPage from "./FamilyPage";
-import FamilyTreePage from "./FamilyTreePage";
 import ProjectsPage from "./ProjectsPage";
-import ProjectDetailPage from "./ProjectDetailPage";
-import TaskTrackingPage from "./TaskTrackingPage";
-import AboutMePage from "./AboutMePage";
-import FinancePage from "./FinancePage";
+
+// Code-split the heavy / rarely-visited pages so the first load isn't a single
+// ~1.2 MB bundle over a slow link. recharts (FinancePage), @xyflow + dagre
+// (FamilyTreePage) and @dnd-kit (ProjectDetailPage → KanbanBoard) each become
+// their own chunk, fetched only when that page is opened.
+const SystemHealthPage = lazy(() => import("./SystemHealthPage"));
+const UsersPage = lazy(() => import("./UsersPage"));
+const NewsAdminPage = lazy(() => import("./NewsAdminPage"));
+const FamilyTreePage = lazy(() => import("./FamilyTreePage"));
+const ProjectDetailPage = lazy(() => import("./ProjectDetailPage"));
+const TaskTrackingPage = lazy(() => import("./TaskTrackingPage"));
+const AboutMePage = lazy(() => import("./AboutMePage"));
+const FinancePage = lazy(() => import("./FinancePage"));
+
+const PageFallback = () => (
+  <div className="flex items-center justify-center py-24">
+    <div className="w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+  </div>
+);
 
 function LangToggle() {
   const { lang, setLang } = useT();
@@ -429,7 +440,9 @@ function AppInner() {
       <main className="flex-grow">
         <PageBanner currentPage={currentPage} />
         <Breadcrumb pageHistory={pageHistory} navigateToIndex={navigateToIndex} />
-        {renderContent()}
+        <Suspense fallback={<PageFallback />}>
+          {renderContent()}
+        </Suspense>
       </main>
       <Footer />
     </div>
