@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Wallet, Target, TrendingUp, PiggyBank, AlertTriangle, RefreshCw, Info,
+  ShieldCheck, CalendarClock, Repeat,
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend,
@@ -12,6 +13,12 @@ import { fmtMoney, fmtPct } from "./financeFormat";
 // Palette — brand indigo family + supporting hues, readable in the light theme.
 const COLORS = ["#6366f1", "#10b981", "#f59e0b", "#0ea5e9", "#ec4899", "#8b5cf6", "#64748b"];
 const RISK_COLORS = { liquid: "#0ea5e9", low_risk: "#10b981", market: "#6366f1", unclassified: "#94a3b8" };
+
+const monthLabel = (ym) => {
+  const [y, m] = String(ym).split("-").map(Number);
+  if (!y || !m) return ym;
+  return new Date(y, m - 1, 1).toLocaleString(undefined, { month: "short", year: "2-digit" });
+};
 
 // ── small presentational pieces ─────────────────────────────────────────────
 
@@ -47,12 +54,15 @@ const FinanceDashboard = () => {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [asOf, setAsOf] = useState("");
+  const [reminderHidden, setReminderHidden] = useState(false);
 
   const load = useCallback(async () => {
     setError("");
     try {
+      const qs = asOf ? `?as_of=${asOf}` : "";
       const [s, v, a] = await Promise.all([
-        fetch("/api/finance/summary", { credentials: "include" }),
+        fetch(`/api/finance/summary${qs}`, { credentials: "include" }),
         fetch("/api/finance/valuations", { credentials: "include" }),
         fetch("/api/finance/accounts", { credentials: "include" }),
       ]);
@@ -65,7 +75,7 @@ const FinanceDashboard = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [asOf]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -116,6 +126,20 @@ const FinanceDashboard = () => {
     return [...s];
   }, [valuations, accName]);
 
+  const recentData = useMemo(
+    () => (summary?.recent_months ?? []).map((m) => ({
+      name: monthLabel(m.month), Income: m.income_base, Spending: m.spend_base,
+    })),
+    [summary]
+  );
+
+  const projectionData = useMemo(
+    () => (summary?.projection?.points ?? []).map((p) => ({
+      name: monthLabel(p.month), value: p.value,
+    })),
+    [summary]
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -131,12 +155,25 @@ const FinanceDashboard = () => {
   const nw = summary.net_worth;
   const goal = summary.goal;
   const tm = summary.this_month;
+  const ef = summary.emergency_fund || {};
+  const proj = summary.projection || {};
+  const rec = summary.recurring || { items: [], recurring_total_base: 0 };
+  const budgets = summary.budgets || [];
+  const reminder = summary.reminder || { active: false };
   const goalProgress = goal?.completion_percent != null
     ? [{ name: "progress", value: Math.min(100, goal.completion_percent), fill: "#6366f1" }]
     : [];
 
   const fxMissing = summary.accounts.some((a) => a.after_pending_base == null)
     || (goal && goal.fx_available === false);
+
+  const reminderKey = `financeReminderDismissed:${reminder.month}`;
+  const showReminder = reminder.active && !reminderHidden
+    && (typeof localStorage === "undefined" || localStorage.getItem(reminderKey) !== "1");
+  const dismissReminder = () => {
+    try { localStorage.setItem(reminderKey, "1"); } catch { /* ignore */ }
+    setReminderHidden(true);
+  };
 
   return (
     <div className="space-y-6">
@@ -150,32 +187,177 @@ const FinanceDashboard = () => {
         </button>
       </div>
 
+      {showReminder && (
+        <div className="flex items-start gap-2 text-sm text-indigo-800 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2.5">
+          <CalendarClock className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <span className="font-semibold">Month-end check-in.</span>{" "}
+            Log every transaction for {monthLabel(reminder.month)} so the Emergency Fund and budgets are accurate.
+          </div>
+          <button onClick={dismissReminder} className="text-indigo-500 hover:text-indigo-700 text-xs font-bold uppercase">Dismiss</button>
+        </div>
+      )}
+
       {fxMissing && (
         <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          Some conversions are unavailable — sync or set FX rates in the Settings tab so KRW/base totals are complete.
+          Some conversions are unavailable — sync or set FX rates in the Settings tab so KRW/base totals (and the Emergency Fund) are complete.
         </div>
       )}
 
       {/* KPI row */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <KpiCard icon={Wallet} label={`Net Worth (${base})`}
           value={fmtMoney(nw.after_pending_base, base)}
           sub={`Settled ${fmtMoney(nw.settled_base, base)} · incl. pending`} />
-        <KpiCard icon={Target} label="Goal Progress" accent="text-emerald-600"
+        <KpiCard icon={ShieldCheck} label="Emergency Fund" accent="text-emerald-600"
+          value={fmtMoney(ef.balance_base, base)}
+          sub={ef.monthly_target_base != null
+            ? `Target ~${fmtMoney(ef.monthly_target_base, base)}/mo · this month ${fmtMoney(ef.this_month_projected_base, base)}`
+            : ""} />
+        <KpiCard icon={TrendingUp} label="Projected Net Worth" accent="text-sky-600"
+          value={fmtMoney(proj.projected_net_worth_base, base)}
+          sub={proj.as_of ? `by ${proj.as_of} · ${fmtMoney(proj.monthly_delta_base, base)}/mo` : ""} />
+        <KpiCard icon={Target} label="Goal Progress" accent="text-indigo-600"
           value={goal ? fmtPct(goal.completion_percent) : "—"}
           sub={goal ? `${fmtMoney(goal.current_value, goal.target_currency)} / ${fmtMoney(goal.target_amount, goal.target_currency)}` : "No goal set"} />
         <KpiCard icon={PiggyBank} label="This-Month Savings Rate" accent="text-amber-600"
           value={fmtPct(tm.savings_rate_percent)}
           sub={tm.income_base ? `${fmtMoney(tm.saved_base, base)} saved of ${fmtMoney(tm.income_base, base)}` : "Set income in Budget"} />
-        <KpiCard icon={TrendingUp} label="Deadline" accent="text-sky-600"
-          value={goal?.months_remaining != null ? `${goal.months_remaining} mo` : "—"}
-          sub={goal?.required_monthly_saving_goal_ccy != null
-            ? `Need ~${fmtMoney(goal.required_monthly_saving_goal_ccy, goal.target_currency)}/mo`
-            : (goal?.target_date ? `by ${goal.target_date}` : "")} />
+        <KpiCard icon={Repeat} label="Recurring / month" accent="text-slate-600"
+          value={fmtMoney(rec.recurring_total_base, base)}
+          sub={`${rec.items.length} active item${rec.items.length === 1 ? "" : "s"}`} />
       </div>
 
-      {/* Charts */}
+      {/* Recent months + projection */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <ChartCard title="Last 3 months — income vs spending" hint={`in ${base}`}>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={recentData} margin={{ left: 4, right: 8, top: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#64748b" }} />
+              <YAxis tick={{ fontSize: 11, fill: "#64748b" }} width={64}
+                tickFormatter={(v) => v.toLocaleString()} />
+              <Tooltip formatter={(v) => fmtMoney(v, base)} />
+              <Legend />
+              <Bar dataKey="Income" fill="#10b981" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="Spending" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard title="Net-worth projection"
+          hint={<label className="flex items-center gap-1">to
+            <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)}
+              className="border border-slate-200 rounded px-1.5 py-0.5 text-[11px]" />
+          </label>}>
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={projectionData} margin={{ left: 4, right: 8, top: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#64748b" }}
+                interval="preserveStartEnd" minTickGap={24} />
+              <YAxis tick={{ fontSize: 11, fill: "#64748b" }} width={64}
+                tickFormatter={(v) => v.toLocaleString()} />
+              <Tooltip formatter={(v) => fmtMoney(v, base)} />
+              <Line type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+          <p className="text-[11px] text-slate-400 mt-1">
+            Assumes {fmtMoney(proj.monthly_delta_base, base)}/mo added (income − tax − recurring − allowance). Investment growth not projected.
+          </p>
+        </ChartCard>
+      </div>
+
+      {/* Budgets + top spending */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <ChartCard title="Budgets this month" hint={`in ${base}`}>
+          {budgets.length === 0 ? (
+            <div className="h-[220px] flex items-center justify-center text-sm text-slate-400 text-center px-6">
+              Set a monthly budget on a category in the Budget &amp; Categories tab.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {budgets.map((b) => {
+                const pct = b.percent ?? 0;
+                const barColor = b.over ? "bg-rose-500" : pct >= 80 ? "bg-amber-500" : "bg-emerald-500";
+                return (
+                  <div key={b.category}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="font-semibold text-slate-700">{b.category}</span>
+                      <span className={b.over ? "text-rose-600 font-semibold" : "text-slate-500"}>
+                        {fmtMoney(b.spent_base, base)} / {fmtMoney(b.limit_base, base)}
+                        {b.percent != null && ` · ${b.percent}%`}
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                      <div className={`h-full ${barColor}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </ChartCard>
+
+        <ChartCard title="Top spending this month" hint={`in ${base}`}>
+          {(summary.top_spending || []).length === 0 ? (
+            <div className="h-[220px] flex items-center justify-center text-sm text-slate-400">No spending logged yet.</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={summary.top_spending} layout="vertical" margin={{ left: 8, right: 16 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" horizontal={false} />
+                <XAxis type="number" tick={{ fontSize: 11, fill: "#64748b" }}
+                  tickFormatter={(v) => v.toLocaleString()} />
+                <YAxis type="category" dataKey="category" width={110}
+                  tick={{ fontSize: 11, fill: "#64748b" }} />
+                <Tooltip formatter={(v) => fmtMoney(v, base)} />
+                <Bar dataKey="amount_base" radius={[0, 6, 6, 0]}>
+                  {summary.top_spending.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </ChartCard>
+      </div>
+
+      {/* Top income + recurring list */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <ChartCard title="Top income this month" hint={`in ${base}`}>
+          {(summary.top_income || []).length === 0 ? (
+            <div className="h-[120px] flex items-center justify-center text-sm text-slate-400">No income logged yet.</div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {summary.top_income.map((r) => (
+                <li key={r.category} className="flex justify-between py-2 text-sm">
+                  <span className="text-slate-600">{r.category}</span>
+                  <span className="font-semibold text-slate-800">{fmtMoney(r.amount_base, base)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </ChartCard>
+
+        <ChartCard title="Recurring subscriptions & fixed costs"
+          hint={`${fmtMoney(rec.recurring_total_base, base)}/mo`}>
+          {rec.items.length === 0 ? (
+            <div className="h-[120px] flex items-center justify-center text-sm text-slate-400">None yet.</div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {rec.items.map((r) => (
+                <li key={r.id} className="flex justify-between py-2 text-sm">
+                  <span className="text-slate-600">{r.label}
+                    <span className="text-slate-400"> · day {r.day_of_month} · next {r.next_charge_date}</span></span>
+                  <span className={`font-semibold ${r.type === "income" ? "text-emerald-600" : "text-slate-800"}`}>
+                    {fmtMoney(r.amount, r.currency)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </ChartCard>
+      </div>
+
+      {/* Existing net-worth / goal / exposure charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <ChartCard title="Net worth by account" hint={`in ${base}`}>
           <ResponsiveContainer width="100%" height={260}>
@@ -207,7 +389,7 @@ const FinanceDashboard = () => {
             </ResponsiveContainer>
           ) : (
             <div className="h-[260px] flex items-center justify-center text-sm text-slate-400">
-              Add a primary goal in the Budget &amp; Goals tab.
+              Add a primary goal in the Budget &amp; Categories tab.
             </div>
           )}
         </ChartCard>

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   LayoutDashboard, Landmark, ArrowLeftRight, LineChart as LineChartIcon,
-  Target, Settings2, Plus, Pencil, Trash2, X, RefreshCw, DownloadCloud,
+  Target, Settings2, Plus, Pencil, Trash2, X, RefreshCw, DownloadCloud, Repeat,
 } from "lucide-react";
 import { useAuth } from "./AuthContext";
 import FinanceDashboard from "./FinanceDashboard";
@@ -196,11 +196,12 @@ const TXN_COLORS = {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-const TxnModal = ({ initial, accounts, onClose, onSaved }) => {
+const TxnModal = ({ initial, accounts, categories = [], onClose, onSaved }) => {
   const isEdit = !!initial;
   const [f, setF] = useState(initial ?? {
     account_id: accounts[0]?.id ?? "", date: today(), type: "spend",
-    amount: "", currency: accounts[0]?.currency ?? "SGD", status: "settled", category: "", note: "",
+    amount: "", currency: accounts[0]?.currency ?? "SGD", status: "settled",
+    category_id: "", note: "",
   });
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const ch = (e) => setF((s) => ({ ...s, [e.target.name]: e.target.value }));
@@ -209,7 +210,9 @@ const TxnModal = ({ initial, accounts, onClose, onSaved }) => {
     const payload = {
       account_id: f.account_id === "" ? null : Number(f.account_id),
       date: f.date, type: f.type, amount: Number(f.amount), currency: f.currency,
-      status: f.status, category: f.category || null, note: f.note || null,
+      status: f.status,
+      category_id: f.category_id === "" || f.category_id == null ? null : Number(f.category_id),
+      note: f.note || null,
     };
     try {
       await api(isEdit ? `/transactions/${initial.id}` : "/transactions",
@@ -245,7 +248,12 @@ const TxnModal = ({ initial, accounts, onClose, onSaved }) => {
             </select>
           </Field>
         </div>
-        <Field label="Category"><input name="category" value={f.category ?? ""} onChange={ch} placeholder="groceries, transport…" className={inputCls} /></Field>
+        <Field label="Category">
+          <select name="category_id" value={f.category_id ?? ""} onChange={ch} className={inputCls}>
+            <option value="">— none —</option>
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </Field>
         <Field label="Note"><input name="note" value={f.note ?? ""} onChange={ch} className={inputCls} /></Field>
         {err && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
         <div className="flex gap-3 pt-1">
@@ -257,13 +265,14 @@ const TxnModal = ({ initial, accounts, onClose, onSaved }) => {
   );
 };
 
-const TransactionsTab = ({ accounts }) => {
+const TransactionsTab = ({ accounts, categories = [] }) => {
   const [rows, setRows] = useState([]);
   const [filters, setFilters] = useState({ account_id: "", month: "", type: "", status: "" });
   const [modal, setModal] = useState(null);
   const [del, setDel] = useState(null);
   const [err, setErr] = useState("");
   const accName = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
+  const catName = Object.fromEntries(categories.map((c) => [c.id, c.name]));
 
   const load = useCallback(async () => {
     const qs = new URLSearchParams(Object.entries(filters).filter(([, v]) => v)).toString();
@@ -320,7 +329,7 @@ const TransactionsTab = ({ accounts }) => {
                 </td>
                 <td className="px-4 py-3 text-slate-600">{t.account_id ? accName[t.account_id] || `#${t.account_id}` : "—"}</td>
                 <td className="px-4 py-3 text-right font-semibold text-slate-700">{fmtMoney(t.amount, t.currency)}</td>
-                <td className="px-4 py-3 text-slate-500">{t.category || "—"}</td>
+                <td className="px-4 py-3 text-slate-500">{catName[t.category_id] || t.category || "—"}</td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   <button onClick={() => setModal(t)} className="p-1.5 text-slate-400 hover:text-indigo-600"><Pencil className="w-4 h-4" /></button>
                   <button onClick={() => setDel(t)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
@@ -330,7 +339,7 @@ const TransactionsTab = ({ accounts }) => {
           </tbody>
         </table>
       </div>
-      {modal && <TxnModal initial={modal.id ? modal : null} accounts={accounts} onClose={() => setModal(null)} onSaved={load} />}
+      {modal && <TxnModal initial={modal.id ? modal : null} accounts={accounts} categories={categories} onClose={() => setModal(null)} onSaved={load} />}
       {del && (
         <Modal title="Delete transaction" onClose={() => setDel(null)}>
           <p className="text-sm text-slate-600 mb-4">Delete this {del.type} of {fmtMoney(del.amount, del.currency)} on {del.date}?</p>
@@ -456,9 +465,292 @@ const InvestmentsTab = ({ accounts }) => {
   );
 };
 
-// ── Budget & Goals tab ───────────────────────────────────────────────────────
+// ── Recurring tab (subscriptions / fixed costs) ──────────────────────────────
 
-const BudgetGoalsTab = ({ reloadAll }) => {
+const RECURRING_TYPES = [["spend", "Spend"], ["income", "Income"]];
+
+const RecurringModal = ({ initial, accounts, categories, onClose, onSaved }) => {
+  const isEdit = !!initial;
+  const [f, setF] = useState(initial ?? {
+    label: "", amount: "", currency: "SGD", day_of_month: 1, type: "spend",
+    category_id: "", account_id: "", start_date: "", end_date: "", note: "", is_active: true,
+  });
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const ch = (e) => {
+    const { name, value, type, checked } = e.target;
+    setF((s) => ({ ...s, [name]: type === "checkbox" ? checked : value }));
+  };
+  const submit = async (e) => {
+    e.preventDefault(); setErr(""); setBusy(true);
+    const payload = {
+      label: f.label, amount: Number(f.amount), currency: f.currency,
+      day_of_month: Number(f.day_of_month) || 1, type: f.type,
+      category_id: f.category_id === "" ? null : Number(f.category_id),
+      account_id: f.account_id === "" ? null : Number(f.account_id),
+      start_date: f.start_date || null, end_date: f.end_date || null,
+      note: f.note || null, is_active: !!f.is_active,
+    };
+    try {
+      await api(isEdit ? `/recurring/${initial.id}` : "/recurring",
+        { method: isEdit ? "PUT" : "POST", body: JSON.stringify(payload) });
+      onSaved(); onClose();
+    } catch (e2) { setErr(e2.message); } finally { setBusy(false); }
+  };
+  return (
+    <Modal title={isEdit ? `Edit — ${initial.label}` : "New Recurring Item"} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <Field label="Label *"><input name="label" required value={f.label} onChange={ch} placeholder="Spotify, Rent…" className={inputCls} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Amount"><input name="amount" type="number" step="0.01" required value={f.amount} onChange={ch} className={inputCls} /></Field>
+          <Field label="Currency">
+            <select name="currency" value={f.currency} onChange={ch} className={inputCls}>
+              {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Day of month"><input name="day_of_month" type="number" min="1" max="31" value={f.day_of_month} onChange={ch} className={inputCls} /></Field>
+          <Field label="Type">
+            <select name="type" value={f.type} onChange={ch} className={inputCls}>
+              {RECURRING_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+          <Field label="Category">
+            <select name="category_id" value={f.category_id ?? ""} onChange={ch} className={inputCls}>
+              <option value="">— none —</option>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Account">
+            <select name="account_id" value={f.account_id ?? ""} onChange={ch} className={inputCls}>
+              <option value="">— none —</option>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Start date"><input name="start_date" type="date" value={f.start_date ?? ""} onChange={ch} className={inputCls} /></Field>
+          <Field label="End date"><input name="end_date" type="date" value={f.end_date ?? ""} onChange={ch} className={inputCls} /></Field>
+        </div>
+        <Field label="Note"><input name="note" value={f.note ?? ""} onChange={ch} className={inputCls} /></Field>
+        <label className="flex items-center gap-2 text-xs text-slate-600">
+          <input type="checkbox" name="is_active" checked={!!f.is_active} onChange={ch} className="accent-indigo-600 w-4 h-4" /> Active
+        </label>
+        {err && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
+        <div className="flex gap-3 pt-1">
+          <button disabled={busy} className="flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-60">{busy ? "Saving…" : "Save"}</button>
+          <button type="button" onClick={onClose} className="px-4 text-sm text-slate-500 border rounded-lg hover:bg-slate-50">Cancel</button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+const RecurringTab = ({ accounts, categories, reloadAll }) => {
+  const [rows, setRows] = useState([]);
+  const [modal, setModal] = useState(null);
+  const [del, setDel] = useState(null);
+  const [err, setErr] = useState(""); const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const catName = Object.fromEntries(categories.map((c) => [c.id, c.name]));
+  const accName = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
+  const load = useCallback(async () => {
+    try { setRows(await api("/recurring")); setErr(""); } catch (e) { setErr(e.message); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const remove = async (id) => {
+    try { await api(`/recurring/${id}`, { method: "DELETE" }); setDel(null); load(); reloadAll(); }
+    catch (e) { setErr(e.message); }
+  };
+  const runNow = async () => {
+    setBusy(true); setErr(""); setMsg("");
+    try { const r = await api("/recurring/run", { method: "POST" }); setMsg(`Added ${r.created} transaction(s).`); reloadAll(); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const nextCharge = (r) => {
+    const now = new Date();
+    const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const day = Math.min(r.day_of_month, dim);
+    const d = new Date(now.getFullYear(), now.getMonth(), day);
+    if (d < new Date(now.getFullYear(), now.getMonth(), now.getDate())) d.setMonth(d.getMonth() + 1);
+    return d.toISOString().slice(0, 10);
+  };
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-lg font-bold text-slate-800">Recurring subscriptions &amp; fixed costs</h2>
+        <div className="flex gap-2">
+          <button onClick={runNow} disabled={busy}
+            className="bg-white border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-slate-50 flex items-center gap-1 disabled:opacity-60">
+            <RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} /> Run now
+          </button>
+          <button onClick={() => setModal({})} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-indigo-700 flex items-center gap-1">
+            <Plus className="w-4 h-4" /> New
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-slate-400 mb-4">Each active item auto-creates a settled transaction on its day of the month. Running is also automatic; &ldquo;Run now&rdquo; catches up items due today.</p>
+      {err && <p className="mb-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
+      {msg && <p className="mb-3 text-sm text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{msg}</p>}
+      <div className="overflow-x-auto bg-white rounded-2xl border border-slate-200 shadow-sm">
+        <table className="w-full text-sm">
+          <thead className="text-left text-[10px] uppercase tracking-widest text-slate-400 border-b">
+            <tr>
+              <th className="px-4 py-3">Label</th><th className="px-4 py-3 text-right">Amount</th>
+              <th className="px-4 py-3">Day</th><th className="px-4 py-3">Category</th>
+              <th className="px-4 py-3">Account</th><th className="px-4 py-3">Next charge</th><th className="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No recurring items yet.</td></tr>}
+            {rows.map((r) => (
+              <tr key={r.id} className={`border-b last:border-0 ${r.is_active ? "" : "opacity-50"}`}>
+                <td className="px-4 py-3 font-semibold text-slate-700">{r.label}
+                  {r.type === "income" && <span className="ml-1 text-[10px] font-bold text-emerald-600 uppercase">income</span>}</td>
+                <td className="px-4 py-3 text-right">{fmtMoney(r.amount, r.currency)}</td>
+                <td className="px-4 py-3 text-slate-600">{r.day_of_month}</td>
+                <td className="px-4 py-3 text-slate-500">{catName[r.category_id] || "—"}</td>
+                <td className="px-4 py-3 text-slate-500">{accName[r.account_id] || "—"}</td>
+                <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{r.is_active ? nextCharge(r) : "—"}</td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <button onClick={() => setModal(r)} className="p-1.5 text-slate-400 hover:text-indigo-600"><Pencil className="w-4 h-4" /></button>
+                  <button onClick={() => setDel(r)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {modal && <RecurringModal initial={modal.id ? modal : null} accounts={accounts} categories={categories}
+        onClose={() => setModal(null)} onSaved={() => { load(); reloadAll(); }} />}
+      {del && (
+        <Modal title={`Delete — ${del.label}`} onClose={() => setDel(null)}>
+          <p className="text-sm text-slate-600 mb-4">Deletes the recurring rule. Transactions already generated are kept.</p>
+          <div className="flex gap-3">
+            <button onClick={() => remove(del.id)} className="flex-1 bg-red-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-red-700">Delete</button>
+            <button onClick={() => setDel(null)} className="px-4 text-sm text-slate-500 border rounded-lg hover:bg-slate-50">Cancel</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
+// ── Budget & Categories tab ──────────────────────────────────────────────────
+
+const CATEGORY_KINDS = [
+  ["subscription", "Subscription"], ["fixed", "Fixed cost"], ["variable", "Variable"],
+  ["tax", "Tax"], ["investment", "Investment"], ["income", "Income"],
+];
+
+const CategoryModal = ({ initial, onClose, onSaved }) => {
+  const isEdit = !!initial;
+  const [f, setF] = useState(initial ?? {
+    name: "", kind: "variable", monthly_budget: "", budget_currency: "SGD",
+    sort_order: 0, is_active: true,
+  });
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const ch = (e) => {
+    const { name, value, type, checked } = e.target;
+    setF((s) => ({ ...s, [name]: type === "checkbox" ? checked : value }));
+  };
+  const submit = async (e) => {
+    e.preventDefault(); setErr(""); setBusy(true);
+    const payload = {
+      name: f.name, kind: f.kind,
+      monthly_budget: num(f.monthly_budget),
+      budget_currency: f.monthly_budget === "" ? null : (f.budget_currency || "SGD"),
+      sort_order: Number(f.sort_order) || 0, is_active: !!f.is_active,
+    };
+    try {
+      await api(isEdit ? `/categories/${initial.id}` : "/categories",
+        { method: isEdit ? "PUT" : "POST", body: JSON.stringify(payload) });
+      onSaved(); onClose();
+    } catch (e2) { setErr(e2.message); } finally { setBusy(false); }
+  };
+  return (
+    <Modal title={isEdit ? `Edit — ${initial.name}` : "New Category"} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <Field label="Name *"><input name="name" required value={f.name} onChange={ch} className={inputCls} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Kind">
+            <select name="kind" value={f.kind} onChange={ch} className={inputCls}>
+              {CATEGORY_KINDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+          <Field label="Sort order"><input name="sort_order" type="number" value={f.sort_order ?? 0} onChange={ch} className={inputCls} /></Field>
+          <Field label="Monthly budget"><input name="monthly_budget" type="number" step="0.01" value={f.monthly_budget ?? ""} onChange={ch} placeholder="(no limit)" className={inputCls} /></Field>
+          <Field label="Budget currency">
+            <select name="budget_currency" value={f.budget_currency ?? "SGD"} onChange={ch} className={inputCls}>
+              {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-slate-600">
+          <input type="checkbox" name="is_active" checked={!!f.is_active} onChange={ch} className="accent-indigo-600 w-4 h-4" /> Active
+        </label>
+        {err && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
+        <div className="flex gap-3 pt-1">
+          <button disabled={busy} className="flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-60">{busy ? "Saving…" : "Save"}</button>
+          <button type="button" onClick={onClose} className="px-4 text-sm text-slate-500 border rounded-lg hover:bg-slate-50">Cancel</button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+const CategoriesSection = ({ categories, reloadAll }) => {
+  const [modal, setModal] = useState(null);
+  const [del, setDel] = useState(null);
+  const [err, setErr] = useState("");
+  const remove = async (id) => {
+    try { await api(`/categories/${id}`, { method: "DELETE" }); setDel(null); reloadAll(); }
+    catch (e) { setErr(e.message); }
+  };
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-lg font-bold text-slate-800">Categories &amp; budgets</h2>
+        <button onClick={() => setModal({})} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-indigo-700 flex items-center gap-1">
+          <Plus className="w-4 h-4" /> New
+        </button>
+      </div>
+      {err && <p className="mb-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
+      <div className="overflow-x-auto bg-white rounded-2xl border border-slate-200 shadow-sm">
+        <table className="w-full text-sm">
+          <thead className="text-left text-[10px] uppercase tracking-widest text-slate-400 border-b">
+            <tr><th className="px-4 py-3">Name</th><th className="px-4 py-3">Kind</th>
+              <th className="px-4 py-3 text-right">Monthly budget</th><th className="px-4 py-3"></th></tr>
+          </thead>
+          <tbody>
+            {categories.length === 0 && <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">No categories yet.</td></tr>}
+            {categories.map((c) => (
+              <tr key={c.id} className={`border-b last:border-0 ${c.is_active ? "" : "opacity-50"}`}>
+                <td className="px-4 py-3 font-semibold text-slate-700">{c.name}</td>
+                <td className="px-4 py-3 capitalize text-slate-600">{c.kind}</td>
+                <td className="px-4 py-3 text-right">{c.monthly_budget != null ? fmtMoney(c.monthly_budget, c.budget_currency || "SGD") : "—"}</td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <button onClick={() => setModal(c)} className="p-1.5 text-slate-400 hover:text-indigo-600"><Pencil className="w-4 h-4" /></button>
+                  <button onClick={() => setDel(c)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {modal && <CategoryModal initial={modal.id ? modal : null} onClose={() => setModal(null)} onSaved={reloadAll} />}
+      {del && (
+        <Modal title={`Delete — ${del.name}`} onClose={() => setDel(null)}>
+          <p className="text-sm text-slate-600 mb-4">Deletes the category. Transactions and recurring items keep their history but lose the category link.</p>
+          <div className="flex gap-3">
+            <button onClick={() => remove(del.id)} className="flex-1 bg-red-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-red-700">Delete</button>
+            <button onClick={() => setDel(null)} className="px-4 text-sm text-slate-500 border rounded-lg hover:bg-slate-50">Cancel</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
+const BudgetGoalsTab = ({ categories, reloadAll }) => {
   const [profile, setProfile] = useState(null);
   const [goals, setGoals] = useState([]);
   const [err, setErr] = useState(""); const [msg, setMsg] = useState("");
@@ -480,6 +772,8 @@ const BudgetGoalsTab = ({ reloadAll }) => {
         monthly_income: num(profile.monthly_income), tax_reserve: num(profile.tax_reserve),
         personal_allowance_min: num(profile.personal_allowance_min),
         personal_allowance_max: num(profile.personal_allowance_max),
+        emergency_fund_opening: num(profile.emergency_fund_opening),
+        alert_email: profile.alert_email || null,
       }) });
       setMsg("Saved."); reloadAll();
     } catch (e2) { setErr(e2.message); }
@@ -508,12 +802,19 @@ const BudgetGoalsTab = ({ reloadAll }) => {
           <Field label="Tax reserve /mo"><input type="number" step="0.01" value={profile.tax_reserve ?? ""} onChange={(e) => p("tax_reserve", e.target.value)} className={inputCls} /></Field>
           <Field label="Allowance min"><input type="number" step="0.01" value={profile.personal_allowance_min ?? ""} onChange={(e) => p("personal_allowance_min", e.target.value)} className={inputCls} /></Field>
           <Field label="Allowance max"><input type="number" step="0.01" value={profile.personal_allowance_max ?? ""} onChange={(e) => p("personal_allowance_max", e.target.value)} className={inputCls} /></Field>
+          <Field label="Emergency fund opening"><input type="number" step="0.01" value={profile.emergency_fund_opening ?? ""} onChange={(e) => p("emergency_fund_opening", e.target.value)} className={inputCls} /></Field>
+          <Field label="Month-end alert email"><input type="email" value={profile.alert_email ?? ""} onChange={(e) => p("alert_email", e.target.value)} placeholder="you@example.com" className={inputCls} /></Field>
         </div>
+        <p className="text-[11px] text-slate-400">
+          Each month, <span className="font-semibold">income − tax − investments − recurring − actual variable spend</span> flows into the Emergency Fund (unspent allowance included). The alert email needs SMTP env vars configured on the server; otherwise a reminder banner shows on this page.
+        </p>
         <div className="flex items-center gap-3">
           <button className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700">Save budget</button>
           {msg && <span className="text-sm text-emerald-600">{msg}</span>}
         </div>
       </form>
+
+      <CategoriesSection categories={categories} reloadAll={reloadAll} />
 
       <div>
         <div className="flex justify-between items-center mb-4">
@@ -664,8 +965,9 @@ const TABS = [
   ["dashboard", "Dashboard", LayoutDashboard],
   ["accounts", "Accounts", Landmark],
   ["transactions", "Transactions", ArrowLeftRight],
+  ["recurring", "Recurring", Repeat],
   ["investments", "Investments", LineChartIcon],
-  ["budget", "Budget & Goals", Target],
+  ["budget", "Budget & Categories", Target],
   ["settings", "Settings", Settings2],
 ];
 
@@ -673,17 +975,21 @@ const FinancePage = () => {
   const { user } = useAuth();
   const [tab, setTab] = useState("dashboard");
   const [accounts, setAccounts] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const loadAccounts = useCallback(async () => {
+  const loadShared = useCallback(async () => {
     try {
-      const res = await fetch("/api/finance/accounts", { credentials: "include" });
-      const data = res.ok ? await res.json() : null;
-      if (data) setAccounts(data);
+      const [ar, cr] = await Promise.all([
+        fetch("/api/finance/accounts", { credentials: "include" }),
+        fetch("/api/finance/categories", { credentials: "include" }),
+      ]);
+      if (ar.ok) setAccounts(await ar.json());
+      if (cr.ok) setCategories(await cr.json());
     } catch { /* ignore */ }
   }, []);
-  useEffect(() => { loadAccounts(); }, [loadAccounts, reloadKey]);
-  const reloadAll = () => { setReloadKey((k) => k + 1); loadAccounts(); };
+  useEffect(() => { loadShared(); }, [loadShared, reloadKey]);
+  const reloadAll = () => { setReloadKey((k) => k + 1); loadShared(); };
 
   if (user?.role !== "admin") {
     return <div className="max-w-3xl mx-auto px-6 py-20 text-center text-slate-500">This page is private.</div>;
@@ -706,9 +1012,10 @@ const FinancePage = () => {
 
       {tab === "dashboard" && <FinanceDashboard key={reloadKey} />}
       {tab === "accounts" && <AccountsTab accounts={accounts} reload={reloadAll} />}
-      {tab === "transactions" && <TransactionsTab accounts={accounts} />}
+      {tab === "transactions" && <TransactionsTab accounts={accounts} categories={categories} />}
+      {tab === "recurring" && <RecurringTab accounts={accounts} categories={categories} reloadAll={reloadAll} />}
       {tab === "investments" && <InvestmentsTab accounts={accounts} />}
-      {tab === "budget" && <BudgetGoalsTab reloadAll={reloadAll} />}
+      {tab === "budget" && <BudgetGoalsTab categories={categories} reloadAll={reloadAll} />}
       {tab === "settings" && <SettingsTab reloadAll={reloadAll} />}
     </div>
   );

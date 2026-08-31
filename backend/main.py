@@ -76,6 +76,26 @@ def _fx_sync_job() -> None:
         db.close()
 
 
+def _finance_recurring_job() -> None:
+    db = SessionLocal()
+    try:
+        finance.materialise_recurring(db)
+    except Exception:  # noqa: BLE001 - a scheduled job must never crash the app
+        logging.getLogger(__name__).exception("finance recurring job failed")
+    finally:
+        db.close()
+
+
+def _finance_month_end_job() -> None:
+    db = SessionLocal()
+    try:
+        finance.month_end_maintenance(db)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("finance month-end job failed")
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -86,6 +106,8 @@ def startup() -> None:
     _scheduler.add_job(_news_cleanup_job, "interval", hours=24,   id="news_cleanup", replace_existing=True)
     _scheduler.add_job(_github_sync_job,  "interval", minutes=60, id="github_sync",  replace_existing=True)
     _scheduler.add_job(_fx_sync_job,      "interval", hours=12,   id="fx_sync",      replace_existing=True)
+    _scheduler.add_job(_finance_recurring_job, "interval", hours=12, id="finance_recurring", replace_existing=True)
+    _scheduler.add_job(_finance_month_end_job, "interval", hours=12, id="finance_month_end", replace_existing=True)
     _scheduler.start()
 
 
@@ -117,6 +139,11 @@ def _run_migrations() -> None:
         ("users", "is_suspended",       "BOOLEAN DEFAULT FALSE"),
         ("users", "suspended_until",    "TIMESTAMP"),
         ("users", "suspension_reason",  "VARCHAR"),
+        # Finance Tracker refinement (categories, recurring, emergency fund)
+        ("finance_transactions", "category_id",  "INTEGER"),
+        ("finance_transactions", "recurring_id", "INTEGER"),
+        ("finance_profile",      "emergency_fund_opening", "FLOAT"),
+        ("finance_profile",      "alert_email",            "VARCHAR"),
     ]
     for table, col, col_type in migrations:
         try:

@@ -296,6 +296,10 @@ class FinanceProfile(Base):
     personal_allowance_min = Column(Float, nullable=True)
     personal_allowance_max = Column(Float, nullable=True)
 
+    # Emergency Fund + month-end reminder
+    emergency_fund_opening = Column(Float, nullable=True)              # starting balance before month closes
+    alert_email = Column(String, nullable=True)                       # month-end reminder recipient
+
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -348,7 +352,9 @@ class FinanceTransaction(Base):
     amount = Column(Float, nullable=False)
     currency = Column(String(3), nullable=False, default="SGD")
     status = Column(String, nullable=False, default="settled")   # "pending" | "settled"
-    category = Column(String, nullable=True)                     # free-text bucket for spend/income
+    category = Column(String, nullable=True)                     # legacy free-text bucket (deprecated)
+    category_id = Column(Integer, nullable=True, index=True)     # → finance_categories.id
+    recurring_id = Column(Integer, nullable=True, index=True)    # set when auto-generated from a recurring item
     note = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -387,4 +393,58 @@ class FxRate(Base):
     rate = Column(Float, nullable=False)
     as_of = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     source = Column(String, nullable=False, default="live")  # "live" | "manual"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceCategory(Base):
+    __tablename__ = "finance_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    # "subscription" | "fixed" | "variable" | "tax" | "investment" | "income"
+    kind = Column(String, nullable=False, default="variable")
+    monthly_budget = Column(Float, nullable=True)                 # spending limit for the category
+    budget_currency = Column(String(3), nullable=True)
+    color = Column(String, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceRecurring(Base):
+    __tablename__ = "finance_recurring"
+
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String, nullable=False)                        # e.g. "Spotify"
+    amount = Column(Float, nullable=False)
+    currency = Column(String(3), nullable=False, default="SGD")
+    day_of_month = Column(Integer, nullable=False, default=1)     # 1-31, clamped to month length
+    type = Column(String, nullable=False, default="spend")        # "spend" | "income"
+    category_id = Column(Integer, nullable=True)
+    account_id = Column(Integer, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)
+    last_run_month = Column(String(7), nullable=True)             # "YYYY-MM" dedupe guard
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceMonthlyClose(Base):
+    __tablename__ = "finance_monthly_close"
+    # One finalised row per calendar month. emergency_contribution_base is the
+    # leftover that flows into the Emergency Fund:
+    #   income − tax − investments − recurring − variable_spend   (all in base ccy)
+
+    id = Column(Integer, primary_key=True, index=True)
+    month = Column(String(7), nullable=False, unique=True, index=True)   # "YYYY-MM"
+    base_currency = Column(String(3), nullable=False, default="SGD")
+    income_base = Column(Float, nullable=False, default=0.0)
+    tax_base = Column(Float, nullable=False, default=0.0)
+    investments_base = Column(Float, nullable=False, default=0.0)
+    recurring_base = Column(Float, nullable=False, default=0.0)
+    variable_spend_base = Column(Float, nullable=False, default=0.0)
+    emergency_contribution_base = Column(Float, nullable=False, default=0.0)
+    reminder_sent_at = Column(DateTime, nullable=True)
+    note = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
