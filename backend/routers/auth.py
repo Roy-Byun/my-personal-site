@@ -3,7 +3,7 @@ import re
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -74,16 +74,23 @@ class UserOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-def _set_cookie(response: Response, user: User) -> None:
+def _set_cookie(response: Response, user: User, request: Request | None = None) -> None:
     token = create_access_token({"sub": str(user.id), "role": user.role})
+    # `Secure` only when the request actually arrived over HTTPS (the .ts.net
+    # path). A plain http:// LAN origin needs a non-Secure cookie or the browser
+    # silently drops it and auth appears broken.
+    secure = SECURE_COOKIES
+    if request is not None:
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+        secure = SECURE_COOKIES and proto == "https"
     response.set_cookie(
         key="access_token", value=token, httponly=True,
-        samesite="lax", secure=SECURE_COOKIES, max_age=8 * 3600, path="/",
+        samesite="lax", secure=secure, max_age=8 * 3600, path="/",
     )
 
 
 @router.post("/login", response_model=UserOut)
-def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == body.username).first()
     if not user or not verify_password(body.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid username or password")
@@ -100,7 +107,7 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
 
 
 @router.post("/register", response_model=UserOut, status_code=201)
-def register(body: RegisterRequest, response: Response, db: Session = Depends(get_db)):
+def register(body: RegisterRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     invite = db.query(InviteToken).filter(
         InviteToken.token == body.invite_token,
         InviteToken.used_at == None,
@@ -136,7 +143,7 @@ def register(body: RegisterRequest, response: Response, db: Session = Depends(ge
     invite.used_by_id = user.id
     db.commit()
     db.refresh(user)
-    _set_cookie(response, user)
+    _set_cookie(response, user, request)
     return UserOut.model_validate(user)
 
 
@@ -154,6 +161,7 @@ def me(current_user: User = Depends(get_current_user)):
 @router.put("/me", response_model=UserOut)
 def update_profile(
     body: ProfileUpdate,
+    request: Request,
     response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -179,7 +187,7 @@ def update_profile(
         current_user.hashed_password = hash_password(body.password)
     db.commit()
     db.refresh(current_user)
-    _set_cookie(response, current_user)
+    _set_cookie(response, current_user, request)
     return UserOut.model_validate(current_user)
 
 

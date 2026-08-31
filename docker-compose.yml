@@ -42,7 +42,9 @@ services:
       - SMTP_PASSWORD=${SMTP_PASSWORD:-}
       - SMTP_FROM=${SMTP_FROM:-}
       - SMTP_STARTTLS=${SMTP_STARTTLS:-true}
-      - ALLOWED_ORIGINS=https://roika-server.hedgehog-heptatonic.ts.net
+      # ts.net = remote (over Tailscale); the http:// entries = fast local
+      # access on the home LAN, bypassing Tailscale entirely.
+      - ALLOWED_ORIGINS=https://roika-server.hedgehog-heptatonic.ts.net,http://192.168.88.10,http://roika.local,http://localhost
     depends_on:
       db:
         condition: service_healthy
