@@ -1062,6 +1062,14 @@ const TABS = [
 const FinancePage = () => {
   const { user } = useAuth();
   const [tab, setTab] = useState("dashboard");
+  // Once a tab has been opened, keep it mounted (just hidden) so coming back to
+  // it is instant — no refetch of /profile, /goals, /budgets, etc. over a slow
+  // link. Only the first visit pays the load cost.
+  const [seen, setSeen] = useState({ dashboard: true });
+  const openTab = (key) => {
+    setTab(key);
+    setSeen((s) => (s[key] ? s : { ...s, [key]: true }));
+  };
   const [accounts, setAccounts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -1102,7 +1110,7 @@ const FinancePage = () => {
         {TABS.map(([key, label, icon]) => {
           const Icon = icon;
           return (
-            <button key={key} onClick={() => setTab(key)}
+            <button key={key} onClick={() => openTab(key)}
               className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
                 tab === key ? "border-indigo-600 text-indigo-600" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
               <Icon className="w-4 h-4" /> {label}
@@ -1111,13 +1119,27 @@ const FinancePage = () => {
         })}
       </div>
 
-      {tab === "dashboard" && <FinanceDashboard refreshTick={refreshTick} />}
-      {tab === "accounts" && <AccountsTab accounts={accounts} reload={reloadAll} />}
-      {tab === "transactions" && <TransactionsTab accounts={accounts} categories={categories} refreshTick={refreshTick} />}
-      {tab === "recurring" && <RecurringTab accounts={accounts} categories={categories} reloadAll={reloadAll} />}
-      {tab === "investments" && <InvestmentsTab accounts={accounts} />}
-      {tab === "budget" && <BudgetGoalsTab categories={categories} reloadCategories={reloadCategories} reloadAll={reloadAll} />}
-      {tab === "settings" && <SettingsTab reloadAll={reloadAll} />}
+      <div hidden={tab !== "dashboard"}>
+        {seen.dashboard && <FinanceDashboard refreshTick={refreshTick} />}
+      </div>
+      <div hidden={tab !== "accounts"}>
+        {seen.accounts && <AccountsTab accounts={accounts} reload={reloadAll} />}
+      </div>
+      <div hidden={tab !== "transactions"}>
+        {seen.transactions && <TransactionsTab accounts={accounts} categories={categories} refreshTick={refreshTick} />}
+      </div>
+      <div hidden={tab !== "recurring"}>
+        {seen.recurring && <RecurringTab accounts={accounts} categories={categories} reloadAll={reloadAll} />}
+      </div>
+      <div hidden={tab !== "investments"}>
+        {seen.investments && <InvestmentsTab accounts={accounts} />}
+      </div>
+      <div hidden={tab !== "budget"}>
+        {seen.budget && <BudgetGoalsTab categories={categories} reloadCategories={reloadCategories} reloadAll={reloadAll} />}
+      </div>
+      <div hidden={tab !== "settings"}>
+        {seen.settings && <SettingsTab reloadAll={reloadAll} />}
+      </div>
     </div>
   );
 };
