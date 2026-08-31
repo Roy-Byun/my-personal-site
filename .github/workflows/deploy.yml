@@ -45,8 +45,20 @@ jobs:
 
       - name: Build and Deploy
         run: |
-          docker compose down --remove-orphans
-          docker volume rm $(docker volume ls -q | grep frontend_assets) || true
-          docker compose build --no-cache frontend
-          docker compose build --no-cache backend
-          docker compose up -d
+          set -e
+          # Build FIRST — if this fails (e.g. Docker Hub unreachable), the
+          # running site is left completely untouched.
+          built=0
+          for i in 1 2 3; do
+            if docker compose build frontend backend; then built=1; break; fi
+            echo "Build attempt $i failed; retrying in 30s..."
+            sleep 30
+          done
+          [ "$built" = 1 ] || { echo "All build attempts failed — deployment left as-is."; exit 1; }
+
+          # Recreate only the containers whose image/config changed. No teardown,
+          # no volume wipe — the frontend image refreshes the shared assets
+          # volume itself on start (see frontend/Dockerfile).
+          docker compose up -d --remove-orphans
+          docker compose restart nginx
+          docker image prune -f || true
