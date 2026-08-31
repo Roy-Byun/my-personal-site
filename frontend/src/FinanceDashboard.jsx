@@ -12,7 +12,6 @@ import { fmtMoney, fmtPct } from "./financeFormat";
 
 // Palette — brand indigo family + supporting hues, readable in the light theme.
 const COLORS = ["#6366f1", "#10b981", "#f59e0b", "#0ea5e9", "#ec4899", "#8b5cf6", "#64748b"];
-const RISK_COLORS = { liquid: "#0ea5e9", low_risk: "#10b981", market: "#6366f1", unclassified: "#94a3b8" };
 
 const monthLabel = (ym) => {
   const [y, m] = String(ym).split("-").map(Number);
@@ -48,7 +47,7 @@ const ChartCard = ({ title, hint, children }) => (
 
 // ── dashboard ────────────────────────────────────────────────────────────────
 
-const FinanceDashboard = () => {
+const FinanceDashboard = ({ refreshTick = 0 }) => {
   const [summary, setSummary] = useState(null);
   const [valuations, setValuations] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -77,7 +76,9 @@ const FinanceDashboard = () => {
     }
   }, [asOf]);
 
-  useEffect(() => { load(); }, [load]);
+  // Refetch in place on mount, when the projection date changes, and when the
+  // parent signals a data change — without remounting (no chart flash).
+  useEffect(() => { load(); }, [load, refreshTick]);
 
   const accName = useMemo(() => {
     const m = {};
@@ -100,14 +101,6 @@ const FinanceDashboard = () => {
     const p = summary.net_worth.by_currency_pending || {};
     const keys = new Set([...Object.keys(s), ...Object.keys(p)]);
     return [...keys].map((k) => ({ name: k, value: (s[k] || 0) + (p[k] || 0) }));
-  }, [summary]);
-
-  // Risk split pie
-  const riskData = useMemo(() => {
-    if (!summary) return [];
-    return Object.entries(summary.risk_split_base || {})
-      .filter(([, v]) => v > 0)
-      .map(([k, v]) => ({ name: k.replace("_", " "), key: k, value: v }));
   }, [summary]);
 
   // Valuation trend per investment account (line chart, grouped by as_of)
@@ -357,24 +350,25 @@ const FinanceDashboard = () => {
         </ChartCard>
       </div>
 
-      {/* Existing net-worth / goal / exposure charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <ChartCard title="Net worth by account" hint={`in ${base}`}>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={byAccount} margin={{ left: 4, right: 8, top: 4 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
-              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#64748b" }} interval={0}
-                angle={-12} textAnchor="end" height={54} />
-              <YAxis tick={{ fontSize: 11, fill: "#64748b" }} width={64}
-                tickFormatter={(v) => v.toLocaleString()} />
-              <Tooltip formatter={(v) => fmtMoney(v, base)} />
-              <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                {byAccount.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
+      {/* Net worth by account (full width — one bar per account) */}
+      <ChartCard title="Net worth by account" hint={`in ${base}`}>
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={byAccount} margin={{ left: 4, right: 8, top: 4 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#64748b" }} interval={0}
+              angle={-12} textAnchor="end" height={54} />
+            <YAxis tick={{ fontSize: 11, fill: "#64748b" }} width={64}
+              tickFormatter={(v) => v.toLocaleString()} />
+            <Tooltip formatter={(v) => fmtMoney(v, base)} />
+            <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+              {byAccount.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartCard>
 
+      {/* Goal progress + currency exposure */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <ChartCard title="Goal progress" hint={goal ? goal.label : ""}>
           {goal ? (
             <ResponsiveContainer width="100%" height={260}>
@@ -403,21 +397,6 @@ const FinanceDashboard = () => {
               </Pie>
               <Legend />
               <Tooltip formatter={(v, n) => fmtMoney(v, n)} />
-            </PieChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        <ChartCard title="Liquid vs market-risk split" hint={`in ${base}`}>
-          <ResponsiveContainer width="100%" height={260}>
-            <PieChart>
-              <Pie data={riskData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95}
-                paddingAngle={2}>
-                {riskData.map((d, i) => (
-                  <Cell key={i} fill={RISK_COLORS[d.key] || COLORS[i % COLORS.length]} />
-                ))}
-              </Pie>
-              <Legend />
-              <Tooltip formatter={(v) => fmtMoney(v, base)} />
             </PieChart>
           </ResponsiveContainer>
         </ChartCard>

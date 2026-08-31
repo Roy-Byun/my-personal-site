@@ -265,9 +265,9 @@ const TxnModal = ({ initial, accounts, categories = [], onClose, onSaved }) => {
   );
 };
 
-const TransactionsTab = ({ accounts, categories = [] }) => {
+const TransactionsTab = ({ accounts, categories = [], refreshTick }) => {
   const [rows, setRows] = useState([]);
-  const [filters, setFilters] = useState({ account_id: "", month: "", type: "", status: "" });
+  const [filters, setFilters] = useState({ account_id: "", category_id: "", month: "", type: "", status: "" });
   const [modal, setModal] = useState(null);
   const [del, setDel] = useState(null);
   const [err, setErr] = useState("");
@@ -281,7 +281,7 @@ const TransactionsTab = ({ accounts, categories = [] }) => {
       setRows(data); setErr("");
     } catch (e) { setErr(e.message); }
   }, [filters]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshTick]);
 
   const remove = async (id) => {
     try { await api(`/transactions/${id}`, { method: "DELETE" }); setDel(null); load(); }
@@ -302,6 +302,10 @@ const TransactionsTab = ({ accounts, categories = [] }) => {
         <select value={filters.account_id} onChange={(e) => setF("account_id", e.target.value)} className={`${inputCls} w-auto`}>
           <option value="">All accounts</option>
           {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+        <select value={filters.category_id} onChange={(e) => setF("category_id", e.target.value)} className={`${inputCls} w-auto`}>
+          <option value="">All categories</option>
+          {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <input type="month" value={filters.month} onChange={(e) => setF("month", e.target.value)} className={`${inputCls} w-auto`} />
         <select value={filters.type} onChange={(e) => setF("type", e.target.value)} className={`${inputCls} w-auto`}>
@@ -697,46 +701,105 @@ const CategoryModal = ({ initial, onClose, onSaved }) => {
   );
 };
 
-const CategoriesSection = ({ categories, reloadAll }) => {
+const KIND_BADGE = {
+  subscription: "bg-violet-100 text-violet-700", fixed: "bg-sky-100 text-sky-700",
+  variable: "bg-slate-100 text-slate-600", tax: "bg-amber-100 text-amber-700",
+  investment: "bg-indigo-100 text-indigo-700", income: "bg-emerald-100 text-emerald-700",
+};
+
+// Read-only budget grid: one row per category with this-month spend + progress.
+// Edits go through the CategoryModal (kept for a single, familiar form).
+const CategoryBudgetGrid = ({ categories, budgets = [], base = "SGD", onChanged }) => {
   const [modal, setModal] = useState(null);
   const [del, setDel] = useState(null);
   const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const byName = Object.fromEntries(budgets.map((b) => [b.category, b]));
+
   const remove = async (id) => {
-    try { await api(`/categories/${id}`, { method: "DELETE" }); setDel(null); reloadAll(); }
+    try { await api(`/categories/${id}`, { method: "DELETE" }); setDel(null); onChanged(); }
     catch (e) { setErr(e.message); }
   };
+  const seedDefaults = async () => {
+    setBusy(true); setErr("");
+    try { await api("/categories/seed-defaults", { method: "POST" }); onChanged(); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-bold text-slate-800">Categories &amp; budgets</h2>
-        <button onClick={() => setModal({})} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-indigo-700 flex items-center gap-1">
-          <Plus className="w-4 h-4" /> New
-        </button>
+      <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
+        <div>
+          <h2 className="text-lg font-bold text-slate-800">Category budgets</h2>
+          <p className="text-xs text-slate-400">Spend and progress are for the current month.</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={seedDefaults} disabled={busy}
+            className="border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg text-sm font-semibold hover:bg-slate-50 disabled:opacity-60">
+            Add standard categories
+          </button>
+          <button onClick={() => setModal({})}
+            className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-indigo-700 flex items-center gap-1">
+            <Plus className="w-4 h-4" /> New category
+          </button>
+        </div>
       </div>
       {err && <p className="mb-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
       <div className="overflow-x-auto bg-white rounded-2xl border border-slate-200 shadow-sm">
         <table className="w-full text-sm">
           <thead className="text-left text-[10px] uppercase tracking-widest text-slate-400 border-b">
-            <tr><th className="px-4 py-3">Name</th><th className="px-4 py-3">Kind</th>
-              <th className="px-4 py-3 text-right">Monthly budget</th><th className="px-4 py-3"></th></tr>
+            <tr>
+              <th className="px-4 py-3">Category</th>
+              <th className="px-4 py-3">Kind</th>
+              <th className="px-4 py-3 text-right">Budget</th>
+              <th className="px-4 py-3 text-right">Spent</th>
+              <th className="px-4 py-3 w-40">Progress</th>
+              <th className="px-4 py-3"></th>
+            </tr>
           </thead>
           <tbody>
-            {categories.length === 0 && <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">No categories yet.</td></tr>}
-            {categories.map((c) => (
-              <tr key={c.id} className={`border-b last:border-0 ${c.is_active ? "" : "opacity-50"}`}>
-                <td className="px-4 py-3 font-semibold text-slate-700">{c.name}</td>
-                <td className="px-4 py-3 capitalize text-slate-600">{c.kind}</td>
-                <td className="px-4 py-3 text-right">{c.monthly_budget != null ? fmtMoney(c.monthly_budget, c.budget_currency || "SGD") : "—"}</td>
-                <td className="px-4 py-3 text-right whitespace-nowrap">
-                  <button onClick={() => setModal(c)} className="p-1.5 text-slate-400 hover:text-indigo-600"><Pencil className="w-4 h-4" /></button>
-                  <button onClick={() => setDel(c)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
-                </td>
-              </tr>
-            ))}
+            {categories.length === 0 && (
+              <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">
+                No categories. Use “Add standard categories” to start.
+              </td></tr>
+            )}
+            {categories.map((c) => {
+              const b = byName[c.name];
+              const pct = b?.percent ?? null;
+              const barColor = b?.over ? "bg-rose-500" : (pct ?? 0) >= 80 ? "bg-amber-500" : "bg-emerald-500";
+              return (
+                <tr key={c.id} className={`border-b last:border-0 hover:bg-slate-50/60 ${c.is_active ? "" : "opacity-40"}`}>
+                  <td className="px-4 py-3 font-semibold text-slate-700">{c.name}</td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${KIND_BADGE[c.kind] || "bg-slate-100 text-slate-600"}`}>{c.kind}</span>
+                  </td>
+                  <td className="px-4 py-3 text-right text-slate-700">
+                    {c.monthly_budget != null ? fmtMoney(c.monthly_budget, c.budget_currency || base) : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className={`px-4 py-3 text-right ${b?.over ? "text-rose-600 font-semibold" : "text-slate-600"}`}>
+                    {b ? fmtMoney(b.spent_base, base) : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-4 py-3">
+                    {c.monthly_budget != null ? (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                          <div className={`h-full ${barColor}`} style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
+                        </div>
+                        <span className="text-[11px] text-slate-400 tabular-nums w-9 text-right">{pct != null ? `${Math.round(pct)}%` : ""}</span>
+                      </div>
+                    ) : <span className="text-slate-300 text-xs">no limit</span>}
+                  </td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <button onClick={() => setModal(c)} className="p-1.5 text-slate-400 hover:text-indigo-600"><Pencil className="w-4 h-4" /></button>
+                    <button onClick={() => setDel(c)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
-      {modal && <CategoryModal initial={modal.id ? modal : null} onClose={() => setModal(null)} onSaved={reloadAll} />}
+      {modal && <CategoryModal initial={modal.id ? modal : null} onClose={() => setModal(null)} onSaved={onChanged} />}
       {del && (
         <Modal title={`Delete — ${del.name}`} onClose={() => setDel(null)}>
           <p className="text-sm text-slate-600 mb-4">Deletes the category. Transactions and recurring items keep their history but lose the category link.</p>
@@ -753,15 +816,20 @@ const CategoriesSection = ({ categories, reloadAll }) => {
 const BudgetGoalsTab = ({ categories, reloadAll }) => {
   const [profile, setProfile] = useState(null);
   const [goals, setGoals] = useState([]);
+  const [budgetInfo, setBudgetInfo] = useState({ budgets: [], base: "SGD" });
   const [err, setErr] = useState(""); const [msg, setMsg] = useState("");
   const [goalModal, setGoalModal] = useState(null);
+  const [showAssumptions, setShowAssumptions] = useState(false);
   const load = useCallback(async () => {
     try {
-      const [prof, gs] = await Promise.all([api("/profile"), api("/goals")]);
-      setProfile(prof); setGoals(gs); setErr("");
+      const [prof, gs, sum] = await Promise.all([api("/profile"), api("/goals"), api("/summary")]);
+      setProfile(prof); setGoals(gs);
+      setBudgetInfo({ budgets: sum.budgets || [], base: sum.base_currency || "SGD" });
+      setErr("");
     } catch (e) { setErr(e.message); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  const onCategoriesChanged = () => { load(); reloadAll(); };
 
   const saveProfile = async (e) => {
     e.preventDefault(); setMsg("");
@@ -785,8 +853,18 @@ const BudgetGoalsTab = ({ categories, reloadAll }) => {
   return (
     <div className="space-y-8">
       {err && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
-      <form onSubmit={saveProfile} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
-        <h2 className="text-lg font-bold text-slate-800">Monthly budget</h2>
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
+        <button type="button" onClick={() => setShowAssumptions((v) => !v)}
+          className="w-full flex items-center justify-between px-6 py-4 text-left">
+          <div>
+            <h2 className="text-lg font-bold text-slate-800">Monthly assumptions</h2>
+            <p className="text-xs text-slate-400">Income, tax reserve, allowance, Emergency Fund, alert email</p>
+          </div>
+          <span className="text-slate-400 text-sm font-semibold">{showAssumptions ? "Hide" : "Edit"}</span>
+        </button>
+        {showAssumptions && (
+        <form onSubmit={saveProfile} className="px-6 pb-6 space-y-4 border-t border-slate-100 pt-4">
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
           <Field label="Base currency">
             <select value={profile.base_currency} onChange={(e) => p("base_currency", e.target.value)} className={inputCls}>{CURRENCIES.map((c) => <option key={c}>{c}</option>)}</select>
@@ -809,12 +887,15 @@ const BudgetGoalsTab = ({ categories, reloadAll }) => {
           Each month, <span className="font-semibold">income − tax − investments − recurring − actual variable spend</span> flows into the Emergency Fund (unspent allowance included). The alert email needs SMTP env vars configured on the server; otherwise a reminder banner shows on this page.
         </p>
         <div className="flex items-center gap-3">
-          <button className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700">Save budget</button>
+          <button className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700">Save assumptions</button>
           {msg && <span className="text-sm text-emerald-600">{msg}</span>}
         </div>
-      </form>
+        </form>
+        )}
+      </div>
 
-      <CategoriesSection categories={categories} reloadAll={reloadAll} />
+      <CategoryBudgetGrid categories={categories} budgets={budgetInfo.budgets}
+        base={budgetInfo.base} onChanged={onCategoriesChanged} />
 
       <div>
         <div className="flex justify-between items-center mb-4">
@@ -976,7 +1057,7 @@ const FinancePage = () => {
   const [tab, setTab] = useState("dashboard");
   const [accounts, setAccounts] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [reloadKey, setReloadKey] = useState(0);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const loadShared = useCallback(async () => {
     try {
@@ -988,8 +1069,12 @@ const FinancePage = () => {
       if (cr.ok) setCategories(await cr.json());
     } catch { /* ignore */ }
   }, []);
-  useEffect(() => { loadShared(); }, [loadShared, reloadKey]);
-  const reloadAll = () => { setReloadKey((k) => k + 1); loadShared(); };
+  useEffect(() => { loadShared(); }, [loadShared]);
+  // Signals data-owning children to refetch in place — no remount, no cascade.
+  const reloadAll = useCallback(() => {
+    setRefreshTick((k) => k + 1);
+    loadShared();
+  }, [loadShared]);
 
   if (user?.role !== "admin") {
     return <div className="max-w-3xl mx-auto px-6 py-20 text-center text-slate-500">This page is private.</div>;
@@ -1010,9 +1095,9 @@ const FinancePage = () => {
         })}
       </div>
 
-      {tab === "dashboard" && <FinanceDashboard key={reloadKey} />}
+      {tab === "dashboard" && <FinanceDashboard refreshTick={refreshTick} />}
       {tab === "accounts" && <AccountsTab accounts={accounts} reload={reloadAll} />}
-      {tab === "transactions" && <TransactionsTab accounts={accounts} categories={categories} />}
+      {tab === "transactions" && <TransactionsTab accounts={accounts} categories={categories} refreshTick={refreshTick} />}
       {tab === "recurring" && <RecurringTab accounts={accounts} categories={categories} reloadAll={reloadAll} />}
       {tab === "investments" && <InvestmentsTab accounts={accounts} />}
       {tab === "budget" && <BudgetGoalsTab categories={categories} reloadAll={reloadAll} />}

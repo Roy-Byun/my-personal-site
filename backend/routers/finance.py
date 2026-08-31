@@ -430,6 +430,7 @@ def delete_account(
 @router.get("/transactions", response_model=List[TransactionOut])
 def list_transactions(
     account_id: Optional[int] = None,
+    category_id: Optional[int] = None,
     month: Optional[str] = Query(default=None, description="YYYY-MM"),
     type: Optional[str] = None,
     status: Optional[str] = Query(default=None),
@@ -438,6 +439,8 @@ def list_transactions(
     q = db.query(FinanceTransaction)
     if account_id is not None:
         q = q.filter(FinanceTransaction.account_id == account_id)
+    if category_id is not None:
+        q = q.filter(FinanceTransaction.category_id == category_id)
     if type:
         q = q.filter(FinanceTransaction.type == type)
     if status:
@@ -691,6 +694,56 @@ class CategoryUpdate(BaseModel):
     sort_order: Optional[int] = None
 
 
+# Standard everyday spending taxonomy — seeded by /baseline and available on
+# demand for existing trackers via POST /categories/seed-defaults.
+# (name, kind, default monthly budget in the base currency or None)
+DEFAULT_CATEGORIES = [
+    ("Salary", "income", None),
+    ("Other income", "income", None),
+    ("Housing / Rent", "fixed", None),
+    ("Utilities", "fixed", None),
+    ("Subscriptions", "subscription", None),
+    ("Groceries", "variable", None),
+    ("Food & Dining", "variable", None),
+    ("Transportation", "variable", None),
+    ("Entertainment", "variable", None),
+    ("Shopping", "variable", None),
+    ("Health", "variable", None),
+    ("Travel", "variable", None),
+    ("Education", "variable", None),
+    ("Gifts & Donations", "variable", None),
+    ("Fees & Charges", "variable", None),
+    ("Tax", "tax", None),
+    ("Investments", "investment", None),
+    ("Miscellaneous", "variable", None),
+]
+
+
+def _seed_default_categories(db: Session) -> int:
+    """Insert any standard categories that don't already exist. Returns count added."""
+    existing = {c.name for c in db.query(FinanceCategory).all()}
+    added = 0
+    base_sort = db.query(FinanceCategory).count()
+    for name, kind, budget in DEFAULT_CATEGORIES:
+        if name in existing:
+            continue
+        db.add(FinanceCategory(
+            name=name, kind=kind, monthly_budget=budget,
+            budget_currency=None, sort_order=base_sort + added,
+        ))
+        added += 1
+    if added:
+        db.commit()
+    return added
+
+
+@router.post("/categories/seed-defaults")
+def seed_default_categories(
+    _: User = Depends(require_admin), db: Session = Depends(get_db)
+):
+    return {"added": _seed_default_categories(db)}
+
+
 @router.get("/categories", response_model=List[CategoryOut])
 def list_categories(
     include_inactive: bool = Query(default=True),
@@ -919,10 +972,71 @@ def recompute_monthly_close(
 
 # ── Shared month helpers (used by endpoints and the scheduler) ───────────────
 
+class FxIndex:
+    """In-memory snapshot of the latest FX rate per directed pair, built with a
+    single query. Conversions are pure-Python so /summary stays fast even as the
+    fx_rates table grows (one sync writes 3 rows every 12h, forever)."""
+
+    def __init__(self, db: Session):
+        self._rates: dict = {}
+        self._asof: dict = {}
+        # Latest row per directed pair only — the fx_rates table grows forever
+        # (one sync every 12h), so never scan all of it.
+        from sqlalchemy import func, select
+        latest_ids = (
+            select(func.max(FxRate.id)).group_by(FxRate.base, FxRate.quote)
+        )
+        for r in db.query(FxRate).filter(FxRate.id.in_(latest_ids)).all():
+            self._rates[(r.base, r.quote)] = r.rate
+            self._asof[(r.base, r.quote)] = r.as_of
+
+    def as_of(self, frm: str, to: str):
+        return self._asof.get((frm.upper(), to.upper()))
+
+    def rate(self, frm: str, to: str) -> Optional[float]:
+        frm, to = frm.upper(), to.upper()
+        if frm == to:
+            return 1.0
+        direct = self._rates.get((frm, to))
+        if direct:
+            return direct
+        inv = self._rates.get((to, frm))
+        if inv:
+            return 1.0 / inv
+        if frm != "USD" and to != "USD":
+            leg1, leg2 = self._rates.get((frm, "USD")), self._rates.get(("USD", to))
+            if not leg1 and self._rates.get(("USD", frm)):
+                leg1 = 1.0 / self._rates[("USD", frm)]
+            if not leg2 and self._rates.get((to, "USD")):
+                leg2 = 1.0 / self._rates[(to, "USD")]
+            if leg1 and leg2:
+                return leg1 * leg2
+        return None
+
+    def to_base(self, amount: Optional[float], ccy: str, base: str) -> Optional[float]:
+        if amount is None:
+            return None
+        if ccy == base:
+            return float(amount)
+        r = self.rate(ccy, base)
+        return None if r is None else float(amount) * r
+
+
+def _signed_amount(txn: FinanceTransaction) -> float:
+    if txn.type in ("deposit", "invest", "payout", "income"):
+        return txn.amount
+    if txn.type in ("withdraw", "spend", "tax"):
+        return -txn.amount
+    return 0.0  # transfer handled by paired rows
+
+
 def _to_base(db: Session, amount: Optional[float], ccy: str, base: str) -> Optional[float]:
     """Convert to base currency, falling back to the raw amount only when the
     currency already is the base. Returns None when a conversion is needed but
-    no FX rate is available."""
+    no FX rate is available.
+
+    Prefer FxIndex.to_base() in hot paths — this per-call helper hits the DB.
+    """
     if amount is None:
         return None
     if ccy == base:
@@ -941,12 +1055,15 @@ def _clamp_day(year: int, month: int, day: int) -> int:
     return min(day, calendar.monthrange(year, month)[1])
 
 
-def _month_figures(db: Session, year: int, month: int) -> dict:
+def _month_figures(
+    db: Session, year: int, month: int, idx: Optional[FxIndex] = None
+) -> dict:
     """Compute the Emergency-Fund inputs for one calendar month, in base ccy.
 
     emergency_contribution = income − tax − investments − recurring − variable_spend
     (so unspent allowance also flows into the Emergency Fund).
     """
+    idx = idx or FxIndex(db)
     profile = _get_or_create_profile(db)
     base = profile.base_currency or "SGD"
     start, end = _month_range(year, month)
@@ -960,7 +1077,7 @@ def _month_figures(db: Session, year: int, month: int) -> dict:
     cats = {c.id: c for c in db.query(FinanceCategory).all()}
 
     def base_amt(t: FinanceTransaction) -> float:
-        v = _to_base(db, t.amount, t.currency, base)
+        v = idx.to_base(t.amount, t.currency, base)
         return v if v is not None else 0.0
 
     # Income: prefer logged income transactions, else the profile assumption.
@@ -969,12 +1086,10 @@ def _month_figures(db: Session, year: int, month: int) -> dict:
         income_base = income_txn_total
     else:
         inc = profile.monthly_income or 0.0
-        income_base = _to_base(db, inc, profile.income_currency or base, base) or 0.0
+        income_base = idx.to_base(inc, profile.income_currency or base, base) or 0.0
 
     tax_txn_total = sum(base_amt(t) for t in txns if t.type == "tax")
-    tax_base = tax_txn_total if tax_txn_total > 0 else (
-        _to_base(db, profile.tax_reserve or 0.0, base, base) or 0.0
-    )
+    tax_base = tax_txn_total if tax_txn_total > 0 else float(profile.tax_reserve or 0.0)
 
     investments_base = sum(
         base_amt(t) for t in txns
@@ -1066,11 +1181,14 @@ def materialise_recurring(db: Session, today: Optional[date] = None) -> int:
     return created
 
 
-def _net_worth_base(db: Session, base: str) -> float:
+def _net_worth_base(db: Session, base: str, idx: Optional[FxIndex] = None) -> float:
+    idx = idx or FxIndex(db)
+    accounts = db.query(FinanceAccount).all()
+    bals = _account_balances(db, accounts)
     total = 0.0
-    for acc in db.query(FinanceAccount).all():
-        settled, pending = _account_balance(db, acc)
-        v = _to_base(db, settled + pending, acc.currency, base)
+    for acc in accounts:
+        settled, pending = bals[acc.id]
+        v = idx.to_base(settled + pending, acc.currency, base)
         if v is not None:
             total += v
     return round(total, 2)
@@ -1181,39 +1299,43 @@ def month_end_maintenance(db: Session, today: Optional[date] = None) -> dict:
 
 # ── Summary (reporting brain) ────────────────────────────────────────────────
 
-def _account_balance(db: Session, account: FinanceAccount) -> tuple[float, float]:
-    """Return (settled_value, pending_value) in the account's native currency.
+def _account_balances(
+    db: Session, accounts: List[FinanceAccount]
+) -> dict:
+    """Batch version of the old per-account balance calc — 2 queries total.
 
+    Returns {account_id: (settled_value, pending_value)} in native currency.
     Investment accounts: value = latest market valuation (already includes
-    returns/payouts). Pending contributions are added on top from pending
-    transactions. Cash accounts: value = sum of settled transactions, signed by
-    type; pending shown separately.
+    returns/payouts) + pending contributions. Cash accounts: signed sum of
+    settled transactions; pending shown separately.
     """
-    settled_txns = db.query(FinanceTransaction).filter(
-        FinanceTransaction.account_id == account.id
-    ).all()
+    ids = [a.id for a in accounts]
+    if not ids:
+        return {}
 
-    def signed(txn: FinanceTransaction) -> float:
-        if txn.type in ("deposit", "invest", "payout", "income"):
-            return txn.amount
-        if txn.type in ("withdraw", "spend", "tax"):
-            return -txn.amount
-        return 0.0  # transfer handled by paired rows
+    txns_by_acc: dict = defaultdict(list)
+    for t in db.query(FinanceTransaction).filter(
+        FinanceTransaction.account_id.in_(ids)
+    ).all():
+        txns_by_acc[t.account_id].append(t)
 
-    pending = sum(t.amount for t in settled_txns if t.status == "pending"
-                  and t.type in ("deposit", "invest"))
+    latest_val: dict = {}
+    for v in db.query(FinanceValuation).filter(
+        FinanceValuation.account_id.in_(ids)
+    ).order_by(FinanceValuation.as_of.desc(), FinanceValuation.id.desc()).all():
+        latest_val.setdefault(v.account_id, v)
 
-    if account.account_type == "investment":
-        latest_val = db.query(FinanceValuation).filter(
-            FinanceValuation.account_id == account.id
-        ).order_by(FinanceValuation.as_of.desc(), FinanceValuation.id.desc()).first()
-        base = latest_val.market_value if latest_val else sum(
-            signed(t) for t in settled_txns if t.status == "settled"
-        )
-        return (base, pending)
-
-    settled = sum(signed(t) for t in settled_txns if t.status == "settled")
-    return (settled, pending)
+    out: dict = {}
+    for acc in accounts:
+        ts = txns_by_acc.get(acc.id, [])
+        pending = sum(t.amount for t in ts
+                      if t.status == "pending" and t.type in ("deposit", "invest"))
+        if acc.account_type == "investment" and acc.id in latest_val:
+            settled = latest_val[acc.id].market_value
+        else:
+            settled = sum(_signed_amount(t) for t in ts if t.status == "settled")
+        out[acc.id] = (settled, pending)
+    return out
 
 
 @router.get("/summary")
@@ -1227,39 +1349,54 @@ def summary(
     ).all()
 
     base_ccy = profile.base_currency or "SGD"
+    idx = FxIndex(db)
+
+    def _b(amount, ccy):
+        v = idx.to_base(amount, ccy, base_ccy)
+        return v if v is not None else 0.0
+
+    today = date.today()
+    # One query covers this month + the previous 3 completed months.
+    hist_start = _month_range(today.year, today.month)[0]
+    for _k in range(3):
+        py, pm = (hist_start.year, hist_start.month - 1) if hist_start.month > 1 else (hist_start.year - 1, 12)
+        hist_start = date(py, pm, 1)
+    m_end = _month_range(today.year, today.month)[1]
+    hist_txns = db.query(FinanceTransaction).filter(
+        FinanceTransaction.date >= hist_start,
+        FinanceTransaction.date < m_end,
+        FinanceTransaction.status == "settled",
+    ).all()
+    m_start = _month_range(today.year, today.month)[0]
+    m_txns = [t for t in hist_txns if t.date >= m_start]
 
     by_currency_settled: dict = defaultdict(float)
     by_currency_pending: dict = defaultdict(float)
-    risk_split = {"liquid": 0.0, "low_risk": 0.0, "market": 0.0, "unclassified": 0.0}
     account_rows = []
     fx_notes = {}   # rate provenance for conversions we perform
 
     net_base_settled = 0.0
     net_base_after_pending = 0.0
+    bals = _account_balances(db, accounts)
 
     for acc in accounts:
-        settled, pending = _account_balance(db, acc)
+        settled, pending = bals[acc.id]
         after = settled + pending
         by_currency_settled[acc.currency] += settled
         by_currency_pending[acc.currency] += pending
 
-        # Convert to base currency for the combined net worth.
-        conv = fx_fetcher.convert(db, settled, acc.currency, base_ccy)
-        conv_after = fx_fetcher.convert(db, after, acc.currency, base_ccy)
-        settled_base = conv[0] if conv else (settled if acc.currency == base_ccy else None)
-        after_base = conv_after[0] if conv_after else (after if acc.currency == base_ccy else None)
-        if conv and acc.currency != base_ccy:
+        settled_base = idx.to_base(settled, acc.currency, base_ccy)
+        after_base = idx.to_base(after, acc.currency, base_ccy)
+        if acc.currency != base_ccy and idx.rate(acc.currency, base_ccy) is not None:
+            ao = idx.as_of(acc.currency, base_ccy)
             fx_notes[f"{acc.currency}->{base_ccy}"] = {
-                "rate": conv[1], "as_of": conv[2].isoformat(),
+                "rate": idx.rate(acc.currency, base_ccy),
+                "as_of": ao.isoformat() if ao else None,
             }
         if settled_base is not None:
             net_base_settled += settled_base
         if after_base is not None:
             net_base_after_pending += after_base
-
-        role = acc.risk_role if acc.risk_role in risk_split else "unclassified"
-        if after_base is not None:
-            risk_split[role] += after_base
 
         account_rows.append({
             "id": acc.id, "name": acc.name, "institution": acc.institution,
@@ -1279,12 +1416,13 @@ def summary(
     )
     goal_block = None
     if goal:
-        goal_conv = fx_fetcher.convert(db, net_base_after_pending, base_ccy, goal.target_currency)
-        current_in_goal_ccy = goal_conv[0] if goal_conv else None
+        goal_rate = idx.rate(base_ccy, goal.target_currency)
+        current_in_goal_ccy = (
+            net_base_after_pending * goal_rate if goal_rate is not None else None
+        )
         months_remaining = None
         required_monthly = None
         if goal.target_date:
-            today = date.today()
             months_remaining = max(
                 0,
                 (goal.target_date.year - today.year) * 12
@@ -1305,41 +1443,22 @@ def summary(
             "completion_percent": round(completion, 2) if completion is not None else None,
             "months_remaining": months_remaining,
             "required_monthly_saving_goal_ccy": round(required_monthly, 2) if required_monthly is not None else None,
-            "fx_available": goal_conv is not None,
+            "fx_available": goal_rate is not None,
         }
-        if goal_conv and base_ccy != goal.target_currency:
-            fx_notes[f"{base_ccy}->{goal.target_currency}"] = {
-                "rate": goal_conv[1], "as_of": goal_conv[2].isoformat(),
-            }
 
     # This-month savings rate.
-    today = date.today()
-    m_start = date(today.year, today.month, 1)
-    m_txns = db.query(FinanceTransaction).filter(
-        FinanceTransaction.date >= m_start, FinanceTransaction.status == "settled"
-    ).all()
-    saved_base = 0.0
-    for t in m_txns:
-        if t.type in SAVINGS_IN_TYPES:
-            c = fx_fetcher.convert(db, t.amount, t.currency, base_ccy)
-            saved_base += c[0] if c else (t.amount if t.currency == base_ccy else 0.0)
-    income = profile.monthly_income or 0.0
-    if profile.income_currency and profile.income_currency != base_ccy:
-        ic = fx_fetcher.convert(db, income, profile.income_currency, base_ccy)
-        income = ic[0] if ic else income
+    saved_base = sum(_b(t.amount, t.currency) for t in m_txns if t.type in SAVINGS_IN_TYPES)
+    income = idx.to_base(
+        profile.monthly_income or 0.0, profile.income_currency or base_ccy, base_ccy
+    ) or 0.0
     savings_rate = (saved_base / income * 100.0) if income else None
 
     # ── Categories, budgets, top spending/income (this month) ────────────────
-    def _b(amount, ccy):
-        v = _to_base(db, amount, ccy, base_ccy)
-        return v if v is not None else 0.0
-
     cats = db.query(FinanceCategory).order_by(
         FinanceCategory.sort_order.asc(), FinanceCategory.name.asc()
     ).all()
     cat_by_id = {c.id: c for c in cats}
-    m_end = date(today.year + (today.month == 12), (today.month % 12) + 1, 1)
-    this_month_txns = [t for t in m_txns if t.date < m_end]
+    this_month_txns = m_txns
 
     spent_by_cat: dict = defaultdict(float)
     income_by_cat: dict = defaultdict(float)
@@ -1355,7 +1474,7 @@ def summary(
     for c in cats:
         if not c.is_active or c.monthly_budget is None:
             continue
-        limit_base = _to_base(db, c.monthly_budget, c.budget_currency or base_ccy, base_ccy)
+        limit_base = idx.to_base(c.monthly_budget, c.budget_currency or base_ccy, base_ccy)
         spent = round(spent_by_cat.get(c.name, 0.0), 2)
         budgets.append({
             "category": c.name, "kind": c.kind,
@@ -1375,23 +1494,28 @@ def summary(
         key=lambda x: x["amount_base"], reverse=True,
     )[:5]
 
-    # ── Recent 3 completed months (income vs spending) ──────────────────────
+    # ── Recent 3 completed months (income vs spending) ─────────────────────
+    # Bucketed from the single history query above — no extra round-trips.
+    by_month_inc: dict = defaultdict(float)
+    by_month_spend: dict = defaultdict(float)
+    for t in hist_txns:
+        if t.date >= m_start:
+            continue
+        key = f"{t.date.year:04d}-{t.date.month:02d}"
+        if t.type == "income":
+            by_month_inc[key] += _b(t.amount, t.currency)
+        elif t.type in ("spend", "tax"):
+            by_month_spend[key] += _b(t.amount, t.currency)
     recent_months = []
     ry, rm = today.year, today.month
     for _i in range(3):
         rm -= 1
         if rm == 0:
             rm, ry = 12, ry - 1
-        rs, re = _month_range(ry, rm)
-        rtx = db.query(FinanceTransaction).filter(
-            FinanceTransaction.date >= rs, FinanceTransaction.date < re,
-            FinanceTransaction.status == "settled",
-        ).all()
-        inc = sum(_b(t.amount, t.currency) for t in rtx if t.type == "income")
-        spend = sum(_b(t.amount, t.currency) for t in rtx if t.type in ("spend", "tax"))
+        key = f"{ry:04d}-{rm:02d}"
+        inc, spend = round(by_month_inc[key], 2), round(by_month_spend[key], 2)
         recent_months.append({
-            "month": f"{ry:04d}-{rm:02d}",
-            "income_base": round(inc, 2), "spend_base": round(spend, 2),
+            "month": key, "income_base": inc, "spend_base": spend,
             "net_base": round(inc - spend, 2),
         })
     recent_months.reverse()
@@ -1403,7 +1527,7 @@ def summary(
     recurring_rows = []
     recurring_total_base = 0.0
     for it in rec_items:
-        monthly_base = _to_base(db, it.amount, it.currency, base_ccy)
+        monthly_base = idx.to_base(it.amount, it.currency, base_ccy)
         day = _clamp_day(today.year, today.month, it.day_of_month)
         if today.day <= day:
             nxt = date(today.year, today.month, day)
@@ -1422,10 +1546,10 @@ def summary(
     # ── Emergency Fund ────────────────────────────────────────────────────
     contributed = 0.0
     for row in db.query(FinanceMonthlyClose).all():
-        v = _to_base(db, row.emergency_contribution_base, row.base_currency, base_ccy)
+        v = idx.to_base(row.emergency_contribution_base, row.base_currency, base_ccy)
         contributed += v if v is not None else row.emergency_contribution_base
-    opening = _to_base(db, profile.emergency_fund_opening or 0.0, base_ccy, base_ccy) or 0.0
-    this_month_fig = _month_figures(db, today.year, today.month)
+    opening = float(profile.emergency_fund_opening or 0.0)
+    this_month_fig = _month_figures(db, today.year, today.month, idx)
 
     planned_investments_base = 0.0
     for acc in accounts:
@@ -1433,8 +1557,8 @@ def summary(
             planned_investments_base += _b(
                 acc.planned_monthly_contribution, acc.contribution_currency or acc.currency
             )
-    allowance_max_base = _to_base(db, profile.personal_allowance_max or 0.0, base_ccy, base_ccy) or 0.0
-    tax_reserve_base = _to_base(db, profile.tax_reserve or 0.0, base_ccy, base_ccy) or 0.0
+    allowance_max_base = float(profile.personal_allowance_max or 0.0)
+    tax_reserve_base = float(profile.tax_reserve or 0.0)
     monthly_target = (
         income - tax_reserve_base - planned_investments_base
         - recurring_total_base - allowance_max_base
@@ -1504,7 +1628,6 @@ def summary(
             "by_currency_pending": {k: round(v, 2) for k, v in by_currency_pending.items()},
         },
         "accounts": account_rows,
-        "risk_split_base": {k: round(v, 2) for k, v in risk_split.items()},
         "goal": goal_block,
         "this_month": {
             "saved_base": round(saved_base, 2),
@@ -1559,19 +1682,8 @@ def import_baseline(_: User = Depends(require_admin), db: Session = Depends(get_
     profile.emergency_fund_opening = 0.0
     profile.updated_at = datetime.utcnow()
 
-    # Starter spending categories (name, kind, monthly_budget)
-    for i, (cname, ckind, cbudget) in enumerate([
-        ("Rent", "fixed", None),
-        ("Groceries", "variable", 400.0),
-        ("Transport", "variable", 120.0),
-        ("Subscriptions", "subscription", 60.0),
-        ("Tax", "tax", None),
-        ("Salary", "income", None),
-    ]):
-        db.add(FinanceCategory(
-            name=cname, kind=ckind, monthly_budget=cbudget,
-            budget_currency="SGD" if cbudget is not None else None, sort_order=i,
-        ))
+    # Standard spending-category taxonomy
+    _seed_default_categories(db)
 
     # Goal
     db.add(FinanceGoal(
