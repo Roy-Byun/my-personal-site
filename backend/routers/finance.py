@@ -8,6 +8,7 @@ document's calculation rules; /baseline seeds the August-2026 starting state.
 """
 
 import calendar
+import time
 from collections import defaultdict
 from datetime import date, datetime
 from typing import List, Optional
@@ -1056,25 +1057,32 @@ def _clamp_day(year: int, month: int, day: int) -> int:
 
 
 def _month_figures(
-    db: Session, year: int, month: int, idx: Optional[FxIndex] = None
+    db: Session, year: int, month: int, idx: Optional[FxIndex] = None,
+    *, accounts=None, cats=None, txns=None,
 ) -> dict:
     """Compute the Emergency-Fund inputs for one calendar month, in base ccy.
 
     emergency_contribution = income − tax − investments − recurring − variable_spend
     (so unspent allowance also flows into the Emergency Fund).
+
+    `accounts` / `cats` / `txns` may be passed pre-loaded (as the current month's
+    settled rows) to avoid re-querying — /summary does this.
     """
     idx = idx or FxIndex(db)
     profile = _get_or_create_profile(db)
     base = profile.base_currency or "SGD"
     start, end = _month_range(year, month)
 
-    txns = db.query(FinanceTransaction).filter(
-        FinanceTransaction.date >= start, FinanceTransaction.date < end,
-        FinanceTransaction.status == "settled",
-    ).all()
+    if txns is None:
+        txns = db.query(FinanceTransaction).filter(
+            FinanceTransaction.date >= start, FinanceTransaction.date < end,
+            FinanceTransaction.status == "settled",
+        ).all()
 
-    accounts = {a.id: a for a in db.query(FinanceAccount).all()}
-    cats = {c.id: c for c in db.query(FinanceCategory).all()}
+    accounts = ({a.id: a for a in accounts} if accounts is not None
+                else {a.id: a for a in db.query(FinanceAccount).all()})
+    cats = ({c.id: c for c in cats} if cats is not None
+            else {c.id: c for c in db.query(FinanceCategory).all()})
 
     def base_amt(t: FinanceTransaction) -> float:
         v = idx.to_base(t.amount, t.currency, base)
@@ -1338,11 +1346,78 @@ def _account_balances(
     return out
 
 
+def _category_flows(idx: "FxIndex", cats, month_txns, base_ccy):
+    """(spent_by_cat_name, income_by_cat_name) for the given month's txns, base ccy."""
+    cat_by_id = {c.id: c for c in cats}
+    spent: dict = defaultdict(float)
+    income: dict = defaultdict(float)
+    for t in month_txns:
+        label = (cat_by_id[t.category_id].name if t.category_id in cat_by_id
+                 else (t.category or "Uncategorised"))
+        amt = idx.to_base(t.amount, t.currency, base_ccy)
+        amt = amt if amt is not None else 0.0
+        if t.type == "spend":
+            spent[label] += amt
+        elif t.type == "income":
+            income[label] += amt
+    return spent, income
+
+
+def _budgets_from_spend(idx: "FxIndex", cats, spent_by_cat, base_ccy):
+    rows = []
+    for c in cats:
+        if not c.is_active or c.monthly_budget is None:
+            continue
+        limit_base = idx.to_base(c.monthly_budget, c.budget_currency or base_ccy, base_ccy)
+        spent = round(spent_by_cat.get(c.name, 0.0), 2)
+        rows.append({
+            "category": c.name, "kind": c.kind,
+            "limit_base": round(limit_base, 2) if limit_base is not None else None,
+            "spent_base": spent,
+            "percent": round(spent / limit_base * 100.0, 1) if limit_base else None,
+            "over": bool(limit_base is not None and spent > limit_base),
+        })
+    rows.sort(key=lambda b: (b["percent"] is None, -(b["percent"] or 0)))
+    return rows
+
+
+@router.get("/budgets")
+def budgets_endpoint(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Just the per-category budget bars for the current month — the cheap subset
+    of /summary that the Budget & Categories tab needs (≈3 queries)."""
+    profile = _get_or_create_profile(db)
+    base_ccy = profile.base_currency or "SGD"
+    idx = FxIndex(db)
+    today = date.today()
+    m_start, m_end = _month_range(today.year, today.month)
+    cats = db.query(FinanceCategory).order_by(
+        FinanceCategory.sort_order.asc(), FinanceCategory.name.asc()
+    ).all()
+    m_txns = db.query(FinanceTransaction).filter(
+        FinanceTransaction.date >= m_start, FinanceTransaction.date < m_end,
+        FinanceTransaction.status == "settled",
+    ).all()
+    spent, _income = _category_flows(idx, cats, m_txns, base_ccy)
+    return {"base_currency": base_ccy, "budgets": _budgets_from_spend(idx, cats, spent, base_ccy)}
+
+
+# Short-lived cache for /summary: admin-only, read-heavy, hit from both the
+# dashboard and (indirectly) other views. 15s stale is invisible because edits
+# never happen on the dashboard.
+_SUMMARY_TTL = 15.0
+_summary_cache: dict = {}   # as_of_key -> (expires_at, payload)
+
+
 @router.get("/summary")
 def summary(
     as_of: Optional[str] = Query(default=None, description="projection target date YYYY-MM-DD"),
     _: User = Depends(require_admin), db: Session = Depends(get_db),
 ):
+    cache_key = as_of or ""
+    hit = _summary_cache.get(cache_key)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+
     profile = _get_or_create_profile(db)
     accounts = db.query(FinanceAccount).order_by(
         FinanceAccount.sort_order.asc(), FinanceAccount.id.asc()
@@ -1457,33 +1532,8 @@ def summary(
     cats = db.query(FinanceCategory).order_by(
         FinanceCategory.sort_order.asc(), FinanceCategory.name.asc()
     ).all()
-    cat_by_id = {c.id: c for c in cats}
-    this_month_txns = m_txns
-
-    spent_by_cat: dict = defaultdict(float)
-    income_by_cat: dict = defaultdict(float)
-    for t in this_month_txns:
-        label = (cat_by_id[t.category_id].name if t.category_id in cat_by_id
-                 else (t.category or "Uncategorised"))
-        if t.type == "spend":
-            spent_by_cat[label] += _b(t.amount, t.currency)
-        elif t.type == "income":
-            income_by_cat[label] += _b(t.amount, t.currency)
-
-    budgets = []
-    for c in cats:
-        if not c.is_active or c.monthly_budget is None:
-            continue
-        limit_base = idx.to_base(c.monthly_budget, c.budget_currency or base_ccy, base_ccy)
-        spent = round(spent_by_cat.get(c.name, 0.0), 2)
-        budgets.append({
-            "category": c.name, "kind": c.kind,
-            "limit_base": round(limit_base, 2) if limit_base is not None else None,
-            "spent_base": spent,
-            "percent": round(spent / limit_base * 100.0, 1) if limit_base else None,
-            "over": bool(limit_base is not None and spent > limit_base),
-        })
-    budgets.sort(key=lambda b: (b["percent"] is None, -(b["percent"] or 0)))
+    spent_by_cat, income_by_cat = _category_flows(idx, cats, m_txns, base_ccy)
+    budgets = _budgets_from_spend(idx, cats, spent_by_cat, base_ccy)
 
     top_spending = sorted(
         ({"category": k, "amount_base": round(v, 2)} for k, v in spent_by_cat.items() if v > 0),
@@ -1549,7 +1599,10 @@ def summary(
         v = idx.to_base(row.emergency_contribution_base, row.base_currency, base_ccy)
         contributed += v if v is not None else row.emergency_contribution_base
     opening = float(profile.emergency_fund_opening or 0.0)
-    this_month_fig = _month_figures(db, today.year, today.month, idx)
+    this_month_fig = _month_figures(
+        db, today.year, today.month, idx,
+        accounts=accounts, cats=cats, txns=m_txns,
+    )
 
     planned_investments_base = 0.0
     for acc in accounts:
@@ -1619,7 +1672,7 @@ def summary(
             rm_active = False
     reminder = {"active": bool(rm_active), "month": rm_key}
 
-    return {
+    payload = {
         "base_currency": base_ccy,
         "net_worth": {
             "settled_base": round(net_base_settled, 2),
@@ -1652,6 +1705,8 @@ def summary(
         "fx_notes": fx_notes,
         "generated_at": datetime.utcnow().isoformat(),
     }
+    _summary_cache[cache_key] = (time.monotonic() + _SUMMARY_TTL, payload)
+    return payload
 
 
 # ── Baseline seed (August 2026 snapshot from the profile doc) ─────────────────

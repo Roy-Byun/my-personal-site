@@ -13,13 +13,16 @@ and GitHub sync jobs.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 import requests
 from sqlalchemy.orm import Session
 
 from models import FxRate
+
+# Keep the fx_rates table small — only the newest rate per pair is ever used.
+_RETENTION_DAYS = 90
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,21 @@ def fetch_fx_rates(db: Session) -> int:
         stored += 1
     db.commit()
     logger.info("Stored %d live FX rates", stored)
+
+    # Housekeeping: drop history older than the retention window (never the
+    # newest row for a pair — those are all from `now`).
+    try:
+        cutoff = now - timedelta(days=_RETENTION_DAYS)
+        deleted = db.query(FxRate).filter(FxRate.as_of < cutoff).delete(
+            synchronize_session=False
+        )
+        db.commit()
+        if deleted:
+            logger.info("Pruned %d FX rows older than %d days", deleted, _RETENTION_DAYS)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("FX prune failed: %s", exc)
+        db.rollback()
+
     return stored
 
 

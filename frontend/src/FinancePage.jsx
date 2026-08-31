@@ -813,23 +813,30 @@ const CategoryBudgetGrid = ({ categories, budgets = [], base = "SGD", onChanged 
   );
 };
 
-const BudgetGoalsTab = ({ categories, reloadAll }) => {
+const BudgetGoalsTab = ({ categories, reloadCategories, reloadAll }) => {
   const [profile, setProfile] = useState(null);
   const [goals, setGoals] = useState([]);
   const [budgetInfo, setBudgetInfo] = useState({ budgets: [], base: "SGD" });
   const [err, setErr] = useState(""); const [msg, setMsg] = useState("");
   const [goalModal, setGoalModal] = useState(null);
   const [showAssumptions, setShowAssumptions] = useState(false);
-  const load = useCallback(async () => {
+
+  // Profile + goals load once; budget bars come from the cheap /budgets endpoint.
+  const loadCore = useCallback(async () => {
     try {
-      const [prof, gs, sum] = await Promise.all([api("/profile"), api("/goals"), api("/summary")]);
-      setProfile(prof); setGoals(gs);
-      setBudgetInfo({ budgets: sum.budgets || [], base: sum.base_currency || "SGD" });
-      setErr("");
+      const [prof, gs] = await Promise.all([api("/profile"), api("/goals")]);
+      setProfile(prof); setGoals(gs); setErr("");
     } catch (e) { setErr(e.message); }
   }, []);
-  useEffect(() => { load(); }, [load]);
-  const onCategoriesChanged = () => { load(); reloadAll(); };
+  const loadBudgets = useCallback(async () => {
+    try {
+      const b = await api("/budgets");
+      setBudgetInfo({ budgets: b.budgets || [], base: b.base_currency || "SGD" });
+    } catch (e) { setErr(e.message); }
+  }, []);
+  useEffect(() => { loadCore(); loadBudgets(); }, [loadCore, loadBudgets]);
+  // A category change only needs the category list + budget bars refreshed.
+  const onCategoriesChanged = () => { reloadCategories(); loadBudgets(); };
 
   const saveProfile = async (e) => {
     e.preventDefault(); setMsg("");
@@ -843,10 +850,10 @@ const BudgetGoalsTab = ({ categories, reloadAll }) => {
         emergency_fund_opening: num(profile.emergency_fund_opening),
         alert_email: profile.alert_email || null,
       }) });
-      setMsg("Saved."); reloadAll();
+      setMsg("Saved."); loadBudgets();
     } catch (e2) { setErr(e2.message); }
   };
-  const removeGoal = async (id) => { try { await api(`/goals/${id}`, { method: "DELETE" }); load(); reloadAll(); } catch (e) { setErr(e.message); } };
+  const removeGoal = async (id) => { try { await api(`/goals/${id}`, { method: "DELETE" }); loadCore(); } catch (e) { setErr(e.message); } };
   const p = (k, v) => setProfile((s) => ({ ...s, [k]: v }));
 
   if (!profile) return <div className="py-12 text-center text-slate-400 text-sm">Loading…</div>;
@@ -921,7 +928,7 @@ const BudgetGoalsTab = ({ categories, reloadAll }) => {
           ))}
         </div>
       </div>
-      {goalModal && <GoalModal initial={goalModal.id ? goalModal : null} onClose={() => setGoalModal(null)} onSaved={() => { load(); reloadAll(); }} />}
+      {goalModal && <GoalModal initial={goalModal.id ? goalModal : null} onClose={() => setGoalModal(null)} onSaved={() => { loadCore(); reloadAll(); }} />}
     </div>
   );
 };
@@ -1059,22 +1066,31 @@ const FinancePage = () => {
   const [categories, setCategories] = useState([]);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  const loadShared = useCallback(async () => {
+  const loadAccounts = useCallback(async () => {
     try {
-      const [ar, cr] = await Promise.all([
-        fetch("/api/finance/accounts", { credentials: "include" }),
-        fetch("/api/finance/categories", { credentials: "include" }),
-      ]);
-      if (ar.ok) setAccounts(await ar.json());
-      if (cr.ok) setCategories(await cr.json());
+      const r = await fetch("/api/finance/accounts", { credentials: "include" });
+      if (r.ok) setAccounts(await r.json());
     } catch { /* ignore */ }
   }, []);
-  useEffect(() => { loadShared(); }, [loadShared]);
-  // Signals data-owning children to refetch in place — no remount, no cascade.
+  const loadCategories = useCallback(async () => {
+    try {
+      const r = await fetch("/api/finance/categories", { credentials: "include" });
+      if (r.ok) setCategories(await r.json());
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => { loadAccounts(); loadCategories(); }, [loadAccounts, loadCategories]);
+
+  // Fine-grained reload signals — a category rename shouldn't refetch accounts,
+  // and neither should trigger a page-wide cascade.
+  const reloadCategories = useCallback(() => {
+    setRefreshTick((k) => k + 1);
+    loadCategories();
+  }, [loadCategories]);
   const reloadAll = useCallback(() => {
     setRefreshTick((k) => k + 1);
-    loadShared();
-  }, [loadShared]);
+    loadAccounts();
+    loadCategories();
+  }, [loadAccounts, loadCategories]);
 
   if (user?.role !== "admin") {
     return <div className="max-w-3xl mx-auto px-6 py-20 text-center text-slate-500">This page is private.</div>;
@@ -1100,7 +1116,7 @@ const FinancePage = () => {
       {tab === "transactions" && <TransactionsTab accounts={accounts} categories={categories} refreshTick={refreshTick} />}
       {tab === "recurring" && <RecurringTab accounts={accounts} categories={categories} reloadAll={reloadAll} />}
       {tab === "investments" && <InvestmentsTab accounts={accounts} />}
-      {tab === "budget" && <BudgetGoalsTab categories={categories} reloadAll={reloadAll} />}
+      {tab === "budget" && <BudgetGoalsTab categories={categories} reloadCategories={reloadCategories} reloadAll={reloadAll} />}
       {tab === "settings" && <SettingsTab reloadAll={reloadAll} />}
     </div>
   );
