@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Column, Date, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, Integer, Numeric, String, Text
 from database import Base
 
 
@@ -268,17 +268,23 @@ class LifeMilestone(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+
 # ── Finance Tracker (admin-only) ──────────────────────────────────────────────
-# Design rules (from the personal-finance baseline doc):
-#   * Store native-currency amounts first; currency conversions are derived
-#     values that always carry the FX rate + timestamp used.
+# Design rules (baseline doc + finance-manager package, docs/finance/):
+#   * `amount` is SIGNED in the account's currency (in = +, out = −); meaning
+#     comes from transaction_type, never from the sign.
+#   * Transfers between own accounts are two linked legs sharing
+#     transfer_group_id, so both balances move and no expense is recorded.
+#   * amount_base is the base-currency value LOCKED at entry time, so past
+#     months never drift when FX moves. Only net worth uses current FX.
+#   * Account balances are computed (opening + settled amounts, or latest
+#     valuation for investments), never stored, so edits can't drift them.
+#   * Imported statements are PROPOSED data: staged in finance_import_* and
+#     only reach finance_transactions on explicit approval.
 #   * Keep pending and settled transactions separate — never mix in a total.
-#   * Investment performance comes from FinanceValuation.total_return (the
-#     platform's reported Total Return), never inferred from payouts, and
-#     payouts are never added on top of a Total Return that already includes
-#     them.
-#   * The savings goal is a deadline/savings metric, kept separate from
-#     per-account performance.
+
+# Exact storage, float in Python (keeps the reporting maths simple).
+Money = Numeric(18, 2, asdecimal=False)
 
 
 class FinanceProfile(Base):
@@ -322,8 +328,15 @@ class FinanceAccount(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)                     # e.g. "Mari Invest Income"
     institution = Column(String, nullable=True)               # e.g. "Mari" / "DBS"
-    account_type = Column(String, nullable=False, default="cash")   # "cash" | "investment"
+    # "cash" | "savings" | "investment" | "liability" | "other_asset"
+    account_type = Column(String, nullable=False, default="cash")
     currency = Column(String(3), nullable=False, default="SGD")
+
+    # Stable slug that import payloads target (account_ref); never the account number.
+    external_ref = Column(String(80), nullable=True, unique=True, index=True)
+    masked_identifier = Column(String(40), nullable=True)     # e.g. "****4321"
+    opening_balance = Column(Money, nullable=False, default=0)
+    include_in_net_worth = Column(Boolean, nullable=False, default=True)
 
     # Roles used by the dashboard to split liquid vs market-risk exposure
     risk_role = Column(String, nullable=True)        # "liquid" | "low_risk" | "market"
@@ -344,18 +357,35 @@ class FinanceTransaction(Base):
     __tablename__ = "finance_transactions"
 
     id = Column(Integer, primary_key=True, index=True)
-    # Nullable: income/spend/tax are cash-flow events that need not belong to an account.
+    # Nullable: income/spend can be logged without tracking the bank account.
     account_id = Column(Integer, nullable=True, index=True)
-    date = Column(Date, nullable=False, index=True)
-    # "deposit"|"invest"|"withdraw"|"payout"|"income"|"spend"|"tax"|"transfer"
-    type = Column(String, nullable=False)
-    amount = Column(Float, nullable=False)
+    transaction_date = Column(Date, nullable=False, index=True)
+    posting_date = Column(Date, nullable=True)
+    description_raw = Column(Text, nullable=False, default="")
+    merchant_normalized = Column(String(160), nullable=True)
+
+    transaction_type = Column(String(30), nullable=False)        # finance.constants.TRANSACTION_TYPES
+    amount = Column(Money, nullable=False)                       # signed, in `currency`
     currency = Column(String(3), nullable=False, default="SGD")
-    status = Column(String, nullable=False, default="settled")   # "pending" | "settled"
-    category = Column(String, nullable=True)                     # legacy free-text bucket (deprecated)
-    category_id = Column(Integer, nullable=True, index=True)     # → finance_categories.id
-    recurring_id = Column(Integer, nullable=True, index=True)    # set when auto-generated from a recurring item
-    note = Column(Text, nullable=True)
+    original_amount = Column(Money, nullable=True)               # e.g. the USD charge on an SGD card
+    original_currency = Column(String(3), nullable=True)
+    exchange_rate = Column(Numeric(18, 8, asdecimal=False), nullable=True)
+    amount_base = Column(Money, nullable=True)                   # locked at entry; None = no FX then
+    base_currency = Column(String(3), nullable=True)
+
+    category_id = Column(Integer, nullable=True, index=True)     # → finance_categories.id (leaf or parent)
+    status = Column(String, nullable=False, default="settled")   # "settled" | "pending"
+    is_fixed_expense = Column(Boolean, nullable=False, default=False)
+
+    transfer_account_id = Column(Integer, nullable=True)         # the other side of a transfer
+    transfer_group_id = Column(String(36), nullable=True, index=True)   # shared by both legs
+    recurring_id = Column(Integer, nullable=True, index=True)    # set when generated from a recurring item
+
+    source = Column(String(10), nullable=False, default="manual")   # manual|import|recurring|auto_leg
+    import_id = Column(Integer, nullable=True, index=True)       # → finance_statement_imports.id
+    fingerprint = Column(String(64), nullable=True, index=True)  # advisory dedupe key
+    notes = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -400,10 +430,11 @@ class FinanceCategory(Base):
     __tablename__ = "finance_categories"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)
-    # "subscription" | "fixed" | "variable" | "tax" | "investment" | "income"
+    name = Column(String, nullable=False)                         # unique per parent (app-level)
+    parent_id = Column(Integer, nullable=True, index=True)        # set → this is a subcategory
+    # "subscription" | "fixed" | "variable" | "tax" | "investment" | "income" | "transfer"
     kind = Column(String, nullable=False, default="variable")
-    monthly_budget = Column(Float, nullable=True)                 # spending limit for the category
+    monthly_budget = Column(Float, nullable=True)                 # spending limit (top-level only)
     budget_currency = Column(String(3), nullable=True)
     color = Column(String, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
@@ -416,10 +447,10 @@ class FinanceRecurring(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     label = Column(String, nullable=False)                        # e.g. "Spotify"
-    amount = Column(Float, nullable=False)
+    amount = Column(Float, nullable=False)                        # positive magnitude
     currency = Column(String(3), nullable=False, default="SGD")
     day_of_month = Column(Integer, nullable=False, default=1)     # 1-31, clamped to month length
-    type = Column(String, nullable=False, default="spend")        # "spend" | "income"
+    type = Column(String, nullable=False, default="expense")      # "expense" | "income"
     category_id = Column(Integer, nullable=True)
     account_id = Column(Integer, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
@@ -447,4 +478,87 @@ class FinanceMonthlyClose(Base):
     emergency_contribution_base = Column(Float, nullable=False, default=0.0)
     reminder_sent_at = Column(DateTime, nullable=True)
     note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceMerchantRule(Base):
+    """Maps a raw-description pattern to a category (+ optional type override).
+    Applied while staging imports; user rules beat the AI's guess."""
+    __tablename__ = "finance_merchant_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    match_type = Column(String(10), nullable=False, default="contains")   # contains|exact|regex
+    pattern = Column(String(200), nullable=False)
+    category_id = Column(Integer, nullable=True)
+    set_transaction_type = Column(String(30), nullable=True)
+    priority = Column(Integer, nullable=False, default=100)       # lower = applied first
+    auto_approve = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceStatementImport(Base):
+    """One uploaded statement JSON batch."""
+    __tablename__ = "finance_statement_imports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    schema_version = Column(String(10), nullable=False)
+    institution = Column(String(120), nullable=True)
+    statement_type = Column(String(60), nullable=True)
+    period_start = Column(Date, nullable=True)
+    period_end = Column(Date, nullable=True)
+    source_currency = Column(String(3), nullable=True)
+    accounts_json = Column(Text, nullable=True)                  # payload accounts[] (create-missing, balance check)
+    status = Column(String(20), nullable=False, default="validated")
+    import_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceImportTransaction(Base):
+    """A staged, not-yet-authoritative transaction awaiting review/approval."""
+    __tablename__ = "finance_import_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    import_id = Column(Integer, nullable=False, index=True)
+    line_index = Column(Integer, nullable=False, default=0)
+    external_id = Column(String(120), nullable=True)
+    account_ref = Column(String(80), nullable=False)
+    transaction_date = Column(Date, nullable=False)
+    posting_date = Column(Date, nullable=True)
+    description_raw = Column(Text, nullable=False, default="")
+    merchant_normalized = Column(String(160), nullable=True)
+    transaction_type = Column(String(30), nullable=False)
+    amount = Column(Money, nullable=False)
+    currency = Column(String(3), nullable=False)
+    original_amount = Column(Money, nullable=True)
+    original_currency = Column(String(3), nullable=True)
+    exchange_rate = Column(Numeric(18, 8, asdecimal=False), nullable=True)
+    category = Column(String(80), nullable=True)                 # as proposed by the AI
+    subcategory = Column(String(80), nullable=True)
+    category_id = Column(Integer, nullable=True)                 # resolved against finance_categories
+    transfer_account_ref = Column(String(80), nullable=True)
+    is_recurring = Column(Boolean, nullable=False, default=False)
+    is_fixed_expense = Column(Boolean, nullable=False, default=False)
+    ai_needs_review = Column(Boolean, nullable=False, default=False)
+    confidence = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    fingerprint = Column(String(64), nullable=True, index=True)
+    status = Column(String(12), nullable=False, default="pending")   # pending|needs_review|approved|ignored|duplicate
+    review_reasons = Column(Text, nullable=True)                  # comma-separated flags
+    rule_id = Column(Integer, nullable=True)                      # merchant rule that matched
+    user_edited = Column(Boolean, nullable=False, default=False)
+    duplicate_of_id = Column(Integer, nullable=True)              # → finance_transactions.id
+    approved_transaction_id = Column(Integer, nullable=True)      # set once promoted
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FinanceImportWarning(Base):
+    __tablename__ = "finance_import_warnings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    import_id = Column(Integer, nullable=False, index=True)
+    type = Column(String(40), nullable=False)                    # finance.constants.WARNING_TYPES
+    message = Column(Text, nullable=True)
+    transaction_index = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

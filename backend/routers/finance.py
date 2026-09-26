@@ -1,32 +1,42 @@
 """Finance tracker API (admin-only).
 
-Every route requires an admin user. Resources mirror the personal-finance
-baseline document: a singleton profile (budget assumptions), savings goals,
-accounts, a full transaction ledger, market valuations, asset allocations, and
-FX rates. The /summary endpoint is the reporting brain that applies the
-document's calculation rules; /baseline seeds the August-2026 starting state.
+Every route requires an admin user. Resources: a singleton profile (budget
+assumptions), savings goals, accounts, a signed transaction ledger with two-leg
+transfers, market valuations, asset allocations, categories (with
+subcategories), recurring items, month-end closes and FX rates. /summary is the
+reporting brain; /baseline seeds the August-2026 starting state. Statement
+imports and merchant rules live in routers/finance_imports.py.
+
+Ledger model (docs/finance/decisions.md): amounts are signed in the account's
+currency; meaning comes from transaction_type; transfers between own accounts
+are never income or spending; amount_base is locked at entry time.
 """
 
 import calendar
 import time
+import uuid
 from collections import defaultdict
 from datetime import date, datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 import fx_fetcher
 from auth_utils import require_admin
 from database import get_db
+from finance import constants as C
+from finance import ledger
+from finance.ledger import CategoryIndex, FxIndex
 from models import (
     FinanceAccount,
     FinanceAllocation,
     FinanceCategory,
     FinanceGoal,
+    FinanceImportTransaction,
+    FinanceMerchantRule,
     FinanceMonthlyClose,
-    FinanceProfile,
     FinanceRecurring,
     FinanceTransaction,
     FinanceValuation,
@@ -36,22 +46,14 @@ from models import (
 
 router = APIRouter(prefix="/finance", tags=["finance"])
 
-ACCOUNT_TYPES = ("cash", "investment")
-RISK_ROLES = ("liquid", "low_risk", "market")
-TRANSACTION_TYPES = (
-    "deposit", "invest", "withdraw", "payout", "income", "spend", "tax", "transfer",
-)
-TRANSACTION_STATUSES = ("pending", "settled")
 ASSET_CLASSES = ("equity", "fixed_income", "cash")
-CATEGORY_KINDS = ("subscription", "fixed", "variable", "tax", "investment", "income")
-RECURRING_TYPES = ("spend", "income")
-# Category kinds whose spending is treated as committed/recurring cost rather
-# than discretionary "variable" spend (matters for the Emergency Fund maths).
-FIXED_COST_KINDS = ("subscription", "fixed")
+RECURRING_TYPES = ("expense", "income")
+# Accounts whose inflows count as "saved" in the savings rate.
+SAVINGS_ACCOUNT_TYPES = ("savings", "investment")
 
-# Contributions grow savings; withdrawals/spend/tax reduce it. Used by the
-# monthly savings-rate calculation.
-SAVINGS_IN_TYPES = ("deposit", "invest")
+
+def invalidate_summary_cache() -> None:
+    _summary_cache.clear()
 
 
 # ── Pydantic schemas ─────────────────────────────────────────────────────────
@@ -121,6 +123,10 @@ class AccountOut(BaseModel):
     institution: Optional[str]
     account_type: str
     currency: str
+    external_ref: Optional[str]
+    masked_identifier: Optional[str]
+    opening_balance: float
+    include_in_net_worth: bool
     risk_role: Optional[str]
     liquidity_role: Optional[str]
     planned_monthly_contribution: Optional[float]
@@ -130,6 +136,9 @@ class AccountOut(BaseModel):
     notes: Optional[str]
     created_at: datetime
     updated_at: datetime
+    # computed (native currency)
+    balance: Optional[float] = None
+    pending: Optional[float] = None
     model_config = {"from_attributes": True}
 
 
@@ -138,6 +147,10 @@ class AccountCreate(BaseModel):
     institution: Optional[str] = None
     account_type: str = "cash"
     currency: str = "SGD"
+    external_ref: Optional[str] = None
+    masked_identifier: Optional[str] = None
+    opening_balance: float = 0.0
+    include_in_net_worth: bool = True
     risk_role: Optional[str] = None
     liquidity_role: Optional[str] = None
     planned_monthly_contribution: Optional[float] = None
@@ -152,6 +165,10 @@ class AccountUpdate(BaseModel):
     institution: Optional[str] = None
     account_type: Optional[str] = None
     currency: Optional[str] = None
+    external_ref: Optional[str] = None
+    masked_identifier: Optional[str] = None
+    opening_balance: Optional[float] = None
+    include_in_net_worth: Optional[bool] = None
     risk_role: Optional[str] = None
     liquidity_role: Optional[str] = None
     planned_monthly_contribution: Optional[float] = None
@@ -164,41 +181,78 @@ class AccountUpdate(BaseModel):
 class TransactionOut(BaseModel):
     id: int
     account_id: Optional[int]
-    date: date
-    type: str
+    transaction_date: date
+    posting_date: Optional[date]
+    description_raw: str
+    merchant_normalized: Optional[str]
+    transaction_type: str
     amount: float
     currency: str
-    status: str
-    category: Optional[str]
+    original_amount: Optional[float]
+    original_currency: Optional[str]
+    exchange_rate: Optional[float]
+    amount_base: Optional[float]
+    base_currency: Optional[str]
     category_id: Optional[int]
+    status: str
+    is_fixed_expense: bool
+    transfer_account_id: Optional[int]
+    transfer_group_id: Optional[str]
     recurring_id: Optional[int]
-    note: Optional[str]
+    source: str
+    import_id: Optional[int]
+    notes: Optional[str]
     created_at: datetime
     model_config = {"from_attributes": True}
 
 
 class TransactionCreate(BaseModel):
     account_id: Optional[int] = None
-    date: date
-    type: str
-    amount: float
-    currency: str = "SGD"
-    status: str = "settled"
-    category: Optional[str] = None
+    transaction_date: date
+    posting_date: Optional[date] = None
+    description_raw: str = ""
+    merchant_normalized: Optional[str] = None
+    transaction_type: str
+    amount: float = Field(description="signed: money in = +, money out = −")
+    currency: Optional[str] = None           # defaults to the account's currency
+    original_amount: Optional[float] = None
+    original_currency: Optional[str] = None
+    exchange_rate: Optional[float] = None
     category_id: Optional[int] = None
-    note: Optional[str] = None
+    status: str = "settled"
+    is_fixed_expense: bool = False
+    # For transfer types: the other own account → a linked counter leg is created.
+    transfer_account_id: Optional[int] = None
+    notes: Optional[str] = None
 
 
 class TransactionUpdate(BaseModel):
     account_id: Optional[int] = None
-    date: Optional[date] = None
-    type: Optional[str] = None
+    transaction_date: Optional[date] = None
+    posting_date: Optional[date] = None
+    description_raw: Optional[str] = None
+    merchant_normalized: Optional[str] = None
+    transaction_type: Optional[str] = None
     amount: Optional[float] = None
     currency: Optional[str] = None
-    status: Optional[str] = None
-    category: Optional[str] = None
     category_id: Optional[int] = None
-    note: Optional[str] = None
+    status: Optional[str] = None
+    is_fixed_expense: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class TransferCreate(BaseModel):
+    """Move money between two own accounts: materialised as two linked legs."""
+    from_account_id: int
+    to_account_id: int
+    amount: float = Field(gt=0, description="positive magnitude leaving from_account")
+    to_amount: Optional[float] = Field(default=None, gt=0, description="arriving amount if currencies differ")
+    transaction_date: date
+    transaction_type: str = "transfer"      # transfer | investment_contribution | investment_withdrawal
+    status: str = "settled"
+    description_raw: Optional[str] = None
+    category_id: Optional[int] = None
+    notes: Optional[str] = None
 
 
 class ValuationOut(BaseModel):
@@ -274,14 +328,7 @@ class FxManualIn(BaseModel):
 
 # ── Profile ──────────────────────────────────────────────────────────────────
 
-def _get_or_create_profile(db: Session) -> FinanceProfile:
-    profile = db.query(FinanceProfile).first()
-    if not profile:
-        profile = FinanceProfile()
-        db.add(profile)
-        db.commit()
-        db.refresh(profile)
-    return profile
+_get_or_create_profile = ledger.get_profile
 
 
 @router.get("/profile", response_model=ProfileOut)
@@ -299,6 +346,7 @@ def update_profile(
     profile.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(profile)
+    invalidate_summary_cache()
     return profile
 
 
@@ -332,6 +380,7 @@ def create_goal(
         _clear_other_primary_goals(db, keep_id=goal.id)
     db.commit()
     db.refresh(goal)
+    invalidate_summary_cache()
     return goal
 
 
@@ -349,6 +398,7 @@ def update_goal(
         _clear_other_primary_goals(db, keep_id=goal.id)
     db.commit()
     db.refresh(goal)
+    invalidate_summary_cache()
     return goal
 
 
@@ -361,9 +411,34 @@ def delete_goal(
         raise HTTPException(404, "Goal not found")
     db.delete(goal)
     db.commit()
+    invalidate_summary_cache()
 
 
 # ── Accounts ─────────────────────────────────────────────────────────────────
+
+def _validate_account(db: Session, data: dict, account_id: Optional[int] = None) -> None:
+    if "account_type" in data and data["account_type"] not in C.ACCOUNT_TYPES:
+        raise HTTPException(400, f"account_type must be one of {C.ACCOUNT_TYPES}")
+    if "external_ref" in data:
+        ref = (data["external_ref"] or "").strip() or None
+        data["external_ref"] = ref
+        if ref:
+            clash = db.query(FinanceAccount).filter(FinanceAccount.external_ref == ref)
+            if account_id is not None:
+                clash = clash.filter(FinanceAccount.id != account_id)
+            if clash.first():
+                raise HTTPException(400, f"Another account already uses external_ref {ref!r}")
+
+
+def _with_balances(db: Session, accounts: List[FinanceAccount]) -> List[AccountOut]:
+    bals = ledger.account_balances(db, accounts)
+    out = []
+    for a in accounts:
+        row = AccountOut.model_validate(a)
+        row.balance, row.pending = bals.get(a.id, (None, None))
+        out.append(row)
+    return out
+
 
 @router.get("/accounts", response_model=List[AccountOut])
 def list_accounts(
@@ -373,20 +448,22 @@ def list_accounts(
     q = db.query(FinanceAccount)
     if not include_inactive:
         q = q.filter(FinanceAccount.is_active == True)  # noqa: E712
-    return q.order_by(FinanceAccount.sort_order.asc(), FinanceAccount.id.asc()).all()
+    accounts = q.order_by(FinanceAccount.sort_order.asc(), FinanceAccount.id.asc()).all()
+    return _with_balances(db, accounts)
 
 
 @router.post("/accounts", response_model=AccountOut, status_code=status.HTTP_201_CREATED)
 def create_account(
     body: AccountCreate, _: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
-    if body.account_type not in ACCOUNT_TYPES:
-        raise HTTPException(400, f"account_type must be one of {ACCOUNT_TYPES}")
-    account = FinanceAccount(**body.model_dump())
+    data = body.model_dump()
+    _validate_account(db, data)
+    account = FinanceAccount(**data)
     db.add(account)
     db.commit()
     db.refresh(account)
-    return account
+    invalidate_summary_cache()
+    return _with_balances(db, [account])[0]
 
 
 @router.put("/accounts/{account_id}", response_model=AccountOut)
@@ -398,14 +475,14 @@ def update_account(
     if not account:
         raise HTTPException(404, "Account not found")
     data = body.model_dump(exclude_unset=True)
-    if "account_type" in data and data["account_type"] not in ACCOUNT_TYPES:
-        raise HTTPException(400, f"account_type must be one of {ACCOUNT_TYPES}")
+    _validate_account(db, data, account_id)
     for field, val in data.items():
         setattr(account, field, val)
     account.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(account)
-    return account
+    invalidate_summary_cache()
+    return _with_balances(db, [account])[0]
 
 
 @router.delete("/accounts/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -418,15 +495,46 @@ def delete_account(
     db.query(FinanceValuation).filter(FinanceValuation.account_id == account_id).delete()
     db.query(FinanceAllocation).filter(FinanceAllocation.account_id == account_id).delete()
     # Detach transactions rather than delete them: keep the cash-flow history.
-    for txn in db.query(FinanceTransaction).filter(
+    db.query(FinanceTransaction).filter(
         FinanceTransaction.account_id == account_id
-    ).all():
-        txn.account_id = None
+    ).update({FinanceTransaction.account_id: None}, synchronize_session=False)
+    db.query(FinanceTransaction).filter(
+        FinanceTransaction.transfer_account_id == account_id
+    ).update({FinanceTransaction.transfer_account_id: None}, synchronize_session=False)
     db.delete(account)
     db.commit()
+    invalidate_summary_cache()
 
 
 # ── Transactions ─────────────────────────────────────────────────────────────
+
+def _month_bounds(month: str) -> tuple[date, date]:
+    try:
+        year, mon = (int(x) for x in month.split("-"))
+        return _month_range(year, mon)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "month must be formatted YYYY-MM")
+
+
+def _get_account(db: Session, account_id: Optional[int]) -> Optional[FinanceAccount]:
+    if account_id is None:
+        return None
+    acc = db.query(FinanceAccount).filter(FinanceAccount.id == account_id).first()
+    if not acc:
+        raise HTTPException(400, f"account_id {account_id} does not exist")
+    return acc
+
+
+def _validate_txn_fields(db: Session, data: dict) -> None:
+    if data.get("transaction_type") is not None and data["transaction_type"] not in C.TRANSACTION_TYPES:
+        raise HTTPException(400, f"transaction_type must be one of {C.TRANSACTION_TYPES}")
+    if data.get("status") is not None and data["status"] not in C.TRANSACTION_STATUSES:
+        raise HTTPException(400, f"status must be one of {C.TRANSACTION_STATUSES}")
+    if data.get("category_id") is not None and not db.query(FinanceCategory).filter(
+        FinanceCategory.id == data["category_id"]
+    ).first():
+        raise HTTPException(400, "category_id does not exist")
+
 
 @router.get("/transactions", response_model=List[TransactionOut])
 def list_transactions(
@@ -435,49 +543,102 @@ def list_transactions(
     month: Optional[str] = Query(default=None, description="YYYY-MM"),
     type: Optional[str] = None,
     status: Optional[str] = Query(default=None),
+    source: Optional[str] = None,
+    import_id: Optional[int] = None,
     _: User = Depends(require_admin), db: Session = Depends(get_db),
 ):
     q = db.query(FinanceTransaction)
     if account_id is not None:
         q = q.filter(FinanceTransaction.account_id == account_id)
     if category_id is not None:
-        q = q.filter(FinanceTransaction.category_id == category_id)
+        # A parent category also matches its subcategories.
+        child_ids = [c.id for c in db.query(FinanceCategory.id).filter(
+            FinanceCategory.parent_id == category_id)]
+        q = q.filter(FinanceTransaction.category_id.in_([category_id, *child_ids]))
     if type:
-        q = q.filter(FinanceTransaction.type == type)
+        q = q.filter(FinanceTransaction.transaction_type == type)
     if status:
         q = q.filter(FinanceTransaction.status == status)
+    if source:
+        q = q.filter(FinanceTransaction.source == source)
+    if import_id is not None:
+        q = q.filter(FinanceTransaction.import_id == import_id)
     if month:
-        try:
-            year, mon = (int(x) for x in month.split("-"))
-            start = date(year, mon, 1)
-            end = date(year + (mon == 12), (mon % 12) + 1, 1)
-        except (ValueError, TypeError):
-            raise HTTPException(400, "month must be formatted YYYY-MM")
-        q = q.filter(FinanceTransaction.date >= start, FinanceTransaction.date < end)
-    return q.order_by(FinanceTransaction.date.desc(), FinanceTransaction.id.desc()).all()
+        start, end = _month_bounds(month)
+        q = q.filter(FinanceTransaction.transaction_date >= start,
+                     FinanceTransaction.transaction_date < end)
+    return q.order_by(FinanceTransaction.transaction_date.desc(), FinanceTransaction.id.desc()).all()
 
 
 @router.post("/transactions", response_model=TransactionOut, status_code=status.HTTP_201_CREATED)
 def create_transaction(
     body: TransactionCreate, _: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
-    if body.type not in TRANSACTION_TYPES:
-        raise HTTPException(400, f"type must be one of {TRANSACTION_TYPES}")
-    if body.status not in TRANSACTION_STATUSES:
-        raise HTTPException(400, f"status must be one of {TRANSACTION_STATUSES}")
-    if body.account_id is not None and not db.query(FinanceAccount).filter(
-        FinanceAccount.id == body.account_id
-    ).first():
-        raise HTTPException(400, "account_id does not exist")
-    if body.category_id is not None and not db.query(FinanceCategory).filter(
-        FinanceCategory.id == body.category_id
-    ).first():
-        raise HTTPException(400, "category_id does not exist")
-    txn = FinanceTransaction(**body.model_dump())
+    data = body.model_dump()
+    _validate_txn_fields(db, data)
+    account = _get_account(db, body.account_id)
+    counter = _get_account(db, body.transfer_account_id)
+    if counter is not None:
+        if body.transaction_type not in C.TRANSFER_TYPES:
+            raise HTTPException(400, "transfer_account_id is only valid for transfer types")
+        if account is None or counter.id == account.id:
+            raise HTTPException(400, "A transfer needs two different accounts")
+    data.pop("transfer_account_id")
+    if not data.get("currency"):
+        data["currency"] = account.currency if account else ledger.base_currency(db)
+
+    idx, base = FxIndex(db), ledger.base_currency(db)
+    txn = FinanceTransaction(**data, source="manual")
+    ledger.lock_base_amount(txn, idx, base)
+    txn.fingerprint = ledger.fingerprint_for(txn, account)
     db.add(txn)
+    db.flush()
+    if counter is not None:
+        ledger.create_counter_leg(db, txn, counter, idx, base, source="manual")
     db.commit()
     db.refresh(txn)
+    invalidate_summary_cache()
     return txn
+
+
+@router.post("/transactions/transfer", response_model=List[TransactionOut], status_code=status.HTTP_201_CREATED)
+def create_transfer(
+    body: TransferCreate, _: User = Depends(require_admin), db: Session = Depends(get_db)
+):
+    """Two linked legs: −amount on from_account, +amount (or +to_amount) on
+    to_account. Neither leg is income or spending."""
+    if body.transaction_type not in C.TRANSFER_TYPES:
+        raise HTTPException(400, f"transaction_type must be one of {C.TRANSFER_TYPES}")
+    _validate_txn_fields(db, body.model_dump())
+    src, dst = _get_account(db, body.from_account_id), _get_account(db, body.to_account_id)
+    if src.id == dst.id:
+        raise HTTPException(400, "from and to accounts must differ")
+
+    idx, base = FxIndex(db), ledger.base_currency(db)
+    group = str(uuid.uuid4())
+    desc = body.description_raw or f"Transfer {src.name} → {dst.name}"
+    if body.to_amount is not None:
+        in_amt = body.to_amount
+    else:
+        in_amt, _ccy = ledger.counter_amount(-body.amount, src.currency, dst.currency, idx)
+    legs = []
+    for acc, other, amt in ((src, dst, -body.amount), (dst, src, in_amt)):
+        leg = FinanceTransaction(
+            account_id=acc.id, transaction_date=body.transaction_date,
+            description_raw=desc, transaction_type=body.transaction_type,
+            amount=amt, currency=acc.currency, category_id=body.category_id,
+            status=body.status, transfer_account_id=other.id, transfer_group_id=group,
+            source="manual", notes=body.notes,
+        )
+        ledger.lock_base_amount(leg, idx, base)
+        leg.fingerprint = ledger.fingerprint_for(leg, acc)
+        db.add(leg)
+        legs.append(leg)
+    db.commit()
+    for leg in legs:
+        db.refresh(leg)
+    invalidate_summary_cache()
+    return legs
 
 
 @router.put("/transactions/{txn_id}", response_model=TransactionOut)
@@ -489,18 +650,35 @@ def update_transaction(
     if not txn:
         raise HTTPException(404, "Transaction not found")
     data = body.model_dump(exclude_unset=True)
-    if "type" in data and data["type"] not in TRANSACTION_TYPES:
-        raise HTTPException(400, f"type must be one of {TRANSACTION_TYPES}")
-    if "status" in data and data["status"] not in TRANSACTION_STATUSES:
-        raise HTTPException(400, f"status must be one of {TRANSACTION_STATUSES}")
-    if data.get("category_id") is not None and not db.query(FinanceCategory).filter(
-        FinanceCategory.id == data["category_id"]
-    ).first():
-        raise HTTPException(400, "category_id does not exist")
+    _validate_txn_fields(db, data)
+    if "account_id" in data:
+        _get_account(db, data["account_id"])
     for field, val in data.items():
         setattr(txn, field, val)
+
+    idx, base = FxIndex(db), ledger.base_currency(db)
+    accounts = {a.id: a for a in db.query(FinanceAccount).all()}
+    # Keep the other leg of a transfer in step (date/status/type/amount).
+    for other in ledger.transfer_legs(db, txn):
+        if other.id == txn.id:
+            continue
+        for field in ("transaction_date", "status", "transaction_type", "description_raw", "category_id"):
+            if field in data:
+                setattr(other, field, getattr(txn, field))
+        if "amount" in data or "currency" in data:
+            other.amount, other.currency = ledger.counter_amount(
+                txn.amount, txn.currency,
+                accounts[other.account_id].currency if other.account_id in accounts else other.currency,
+                idx,
+            )
+        ledger.lock_base_amount(other, idx, base)
+        if other.source != "auto_leg":
+            other.fingerprint = ledger.fingerprint_for(other, accounts.get(other.account_id))
+    ledger.lock_base_amount(txn, idx, base)
+    txn.fingerprint = ledger.fingerprint_for(txn, accounts.get(txn.account_id))
     db.commit()
     db.refresh(txn)
+    invalidate_summary_cache()
     return txn
 
 
@@ -511,8 +689,18 @@ def delete_transaction(
     txn = db.query(FinanceTransaction).filter(FinanceTransaction.id == txn_id).first()
     if not txn:
         raise HTTPException(404, "Transaction not found")
-    db.delete(txn)
+    legs = ledger.transfer_legs(db, txn)
+    ids = [leg.id for leg in legs]
+    # Staged import rows that produced these go back to the review queue.
+    for row in db.query(FinanceImportTransaction).filter(
+        FinanceImportTransaction.approved_transaction_id.in_(ids)
+    ).all():
+        row.approved_transaction_id = None
+        row.status = "needs_review"
+    for leg in legs:
+        db.delete(leg)
     db.commit()
+    invalidate_summary_cache()
 
 
 # ── Valuations ───────────────────────────────────────────────────────────────
@@ -538,6 +726,7 @@ def create_valuation(
     db.add(val)
     db.commit()
     db.refresh(val)
+    invalidate_summary_cache()
     return val
 
 
@@ -553,6 +742,7 @@ def update_valuation(
         setattr(val, field, value)
     db.commit()
     db.refresh(val)
+    invalidate_summary_cache()
     return val
 
 
@@ -565,6 +755,7 @@ def delete_valuation(
         raise HTTPException(404, "Valuation not found")
     db.delete(val)
     db.commit()
+    invalidate_summary_cache()
 
 
 # ── Allocations ──────────────────────────────────────────────────────────────
@@ -649,6 +840,7 @@ def set_manual_fx(
     db.add(rate)
     db.commit()
     db.refresh(rate)
+    invalidate_summary_cache()
     return rate
 
 
@@ -657,6 +849,7 @@ def sync_fx(_: User = Depends(require_admin), db: Session = Depends(get_db)):
     count = fx_fetcher.fetch_fx_rates(db)
     if count == 0:
         raise HTTPException(502, "Failed to fetch FX rates from all sources")
+    invalidate_summary_cache()
     return {"stored": count}
 
 
@@ -665,6 +858,7 @@ def sync_fx(_: User = Depends(require_admin), db: Session = Depends(get_db)):
 class CategoryOut(BaseModel):
     id: int
     name: str
+    parent_id: Optional[int]
     kind: str
     monthly_budget: Optional[float]
     budget_currency: Optional[str]
@@ -677,7 +871,8 @@ class CategoryOut(BaseModel):
 
 class CategoryCreate(BaseModel):
     name: str
-    kind: str = "variable"
+    parent_id: Optional[int] = None
+    kind: Optional[str] = None            # defaults to the parent's kind, else "variable"
     monthly_budget: Optional[float] = None
     budget_currency: Optional[str] = None
     color: Optional[str] = None
@@ -695,54 +890,19 @@ class CategoryUpdate(BaseModel):
     sort_order: Optional[int] = None
 
 
-# Standard everyday spending taxonomy — seeded by /baseline and available on
-# demand for existing trackers via POST /categories/seed-defaults.
-# (name, kind, default monthly budget in the base currency or None)
-DEFAULT_CATEGORIES = [
-    ("Salary", "income", None),
-    ("Other income", "income", None),
-    ("Housing / Rent", "fixed", None),
-    ("Utilities", "fixed", None),
-    ("Subscriptions", "subscription", None),
-    ("Groceries", "variable", None),
-    ("Food & Dining", "variable", None),
-    ("Transportation", "variable", None),
-    ("Entertainment", "variable", None),
-    ("Shopping", "variable", None),
-    ("Health", "variable", None),
-    ("Travel", "variable", None),
-    ("Education", "variable", None),
-    ("Gifts & Donations", "variable", None),
-    ("Fees & Charges", "variable", None),
-    ("Tax", "tax", None),
-    ("Investments", "investment", None),
-    ("Miscellaneous", "variable", None),
-]
-
-
-def _seed_default_categories(db: Session) -> int:
-    """Insert any standard categories that don't already exist. Returns count added."""
-    existing = {c.name for c in db.query(FinanceCategory).all()}
-    added = 0
-    base_sort = db.query(FinanceCategory).count()
-    for name, kind, budget in DEFAULT_CATEGORIES:
-        if name in existing:
-            continue
-        db.add(FinanceCategory(
-            name=name, kind=kind, monthly_budget=budget,
-            budget_currency=None, sort_order=base_sort + added,
-        ))
-        added += 1
-    if added:
-        db.commit()
-    return added
+def _check_category_name(db: Session, name: str, parent_id: Optional[int], exclude_id: Optional[int] = None):
+    q = db.query(FinanceCategory).filter(FinanceCategory.parent_id == parent_id) if parent_id \
+        else db.query(FinanceCategory).filter(FinanceCategory.parent_id.is_(None))
+    for c in q.all():
+        if c.id != exclude_id and C.slugify(c.name) == C.slugify(name):
+            raise HTTPException(400, "A category with that name already exists here")
 
 
 @router.post("/categories/seed-defaults")
 def seed_default_categories(
     _: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
-    return {"added": _seed_default_categories(db)}
+    return {"added": ledger.seed_default_categories(db)}
 
 
 @router.get("/categories", response_model=List[CategoryOut])
@@ -760,14 +920,21 @@ def list_categories(
 def create_category(
     body: CategoryCreate, _: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
-    if body.kind not in CATEGORY_KINDS:
-        raise HTTPException(400, f"kind must be one of {CATEGORY_KINDS}")
-    if db.query(FinanceCategory).filter(FinanceCategory.name == body.name).first():
-        raise HTTPException(400, "A category with that name already exists")
-    cat = FinanceCategory(**body.model_dump())
+    data = body.model_dump()
+    parent = None
+    if body.parent_id is not None:
+        parent = db.query(FinanceCategory).filter(FinanceCategory.id == body.parent_id).first()
+        if not parent or parent.parent_id is not None:
+            raise HTTPException(400, "parent_id must be an existing top-level category")
+    data["kind"] = body.kind or (parent.kind if parent else "variable")
+    if data["kind"] not in C.CATEGORY_KINDS:
+        raise HTTPException(400, f"kind must be one of {C.CATEGORY_KINDS}")
+    _check_category_name(db, body.name, body.parent_id)
+    cat = FinanceCategory(**data)
     db.add(cat)
     db.commit()
     db.refresh(cat)
+    invalidate_summary_cache()
     return cat
 
 
@@ -780,16 +947,19 @@ def update_category(
     if not cat:
         raise HTTPException(404, "Category not found")
     data = body.model_dump(exclude_unset=True)
-    if "kind" in data and data["kind"] not in CATEGORY_KINDS:
-        raise HTTPException(400, f"kind must be one of {CATEGORY_KINDS}")
-    if "name" in data and db.query(FinanceCategory).filter(
-        FinanceCategory.name == data["name"], FinanceCategory.id != category_id
-    ).first():
-        raise HTTPException(400, "A category with that name already exists")
+    if "kind" in data and data["kind"] not in C.CATEGORY_KINDS:
+        raise HTTPException(400, f"kind must be one of {C.CATEGORY_KINDS}")
+    if "name" in data:
+        _check_category_name(db, data["name"], cat.parent_id, exclude_id=cat.id)
     for field, val in data.items():
         setattr(cat, field, val)
+    if "kind" in data and cat.parent_id is None:
+        # Subcategories follow their parent's kind.
+        db.query(FinanceCategory).filter(FinanceCategory.parent_id == cat.id).update(
+            {FinanceCategory.kind: cat.kind}, synchronize_session=False)
     db.commit()
     db.refresh(cat)
+    invalidate_summary_cache()
     return cat
 
 
@@ -800,15 +970,22 @@ def delete_category(
     cat = db.query(FinanceCategory).filter(FinanceCategory.id == category_id).first()
     if not cat:
         raise HTTPException(404, "Category not found")
-    # Detach references rather than cascade-delete history.
-    db.query(FinanceTransaction).filter(
-        FinanceTransaction.category_id == category_id
-    ).update({FinanceTransaction.category_id: None}, synchronize_session=False)
-    db.query(FinanceRecurring).filter(
-        FinanceRecurring.category_id == category_id
-    ).update({FinanceRecurring.category_id: None}, synchronize_session=False)
+    ids = [category_id] + [c.id for c in db.query(FinanceCategory).filter(
+        FinanceCategory.parent_id == category_id).all()]
+    # Detach references rather than cascade-delete history. Transactions in a
+    # deleted subcategory fall back to its parent.
+    fallback = cat.parent_id
+    db.query(FinanceTransaction).filter(FinanceTransaction.category_id.in_(ids)).update(
+        {FinanceTransaction.category_id: fallback}, synchronize_session=False)
+    db.query(FinanceRecurring).filter(FinanceRecurring.category_id.in_(ids)).update(
+        {FinanceRecurring.category_id: fallback}, synchronize_session=False)
+    db.query(FinanceMerchantRule).filter(FinanceMerchantRule.category_id.in_(ids)).update(
+        {FinanceMerchantRule.category_id: fallback}, synchronize_session=False)
+    db.query(FinanceCategory).filter(FinanceCategory.parent_id == category_id).delete(
+        synchronize_session=False)
     db.delete(cat)
     db.commit()
+    invalidate_summary_cache()
 
 
 # ── Recurring items (subscriptions / fixed costs) ────────────────────────────
@@ -833,10 +1010,10 @@ class RecurringOut(BaseModel):
 
 class RecurringCreate(BaseModel):
     label: str
-    amount: float
+    amount: float = Field(gt=0)
     currency: str = "SGD"
     day_of_month: int = 1
-    type: str = "spend"
+    type: str = "expense"
     category_id: Optional[int] = None
     account_id: Optional[int] = None
     is_active: bool = True
@@ -847,7 +1024,7 @@ class RecurringCreate(BaseModel):
 
 class RecurringUpdate(BaseModel):
     label: Optional[str] = None
-    amount: Optional[float] = None
+    amount: Optional[float] = Field(default=None, gt=0)
     currency: Optional[str] = None
     day_of_month: Optional[int] = None
     type: Optional[str] = None
@@ -894,6 +1071,7 @@ def create_recurring(
     db.add(item)
     db.commit()
     db.refresh(item)
+    invalidate_summary_cache()
     return item
 
 
@@ -911,6 +1089,7 @@ def update_recurring(
         setattr(item, field, val)
     db.commit()
     db.refresh(item)
+    invalidate_summary_cache()
     return item
 
 
@@ -927,11 +1106,13 @@ def delete_recurring(
     ).update({FinanceTransaction.recurring_id: None}, synchronize_session=False)
     db.delete(item)
     db.commit()
+    invalidate_summary_cache()
 
 
 @router.post("/recurring/run")
 def run_recurring(_: User = Depends(require_admin), db: Session = Depends(get_db)):
     created = materialise_recurring(db)
+    invalidate_summary_cache()
     return {"created": created}
 
 
@@ -962,89 +1143,13 @@ def list_monthly_close(_: User = Depends(require_admin), db: Session = Depends(g
 def recompute_monthly_close(
     month: str, _: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
-    try:
-        year, mon = (int(x) for x in month.split("-"))
-        date(year, mon, 1)
-    except (ValueError, TypeError):
-        raise HTTPException(400, "month must be formatted YYYY-MM")
-    row = close_month(db, year, mon)
+    start, _end = _month_bounds(month)
+    row = close_month(db, start.year, start.month)
+    invalidate_summary_cache()
     return row
 
 
 # ── Shared month helpers (used by endpoints and the scheduler) ───────────────
-
-class FxIndex:
-    """In-memory snapshot of the latest FX rate per directed pair, built with a
-    single query. Conversions are pure-Python so /summary stays fast even as the
-    fx_rates table grows (one sync writes 3 rows every 12h, forever)."""
-
-    def __init__(self, db: Session):
-        self._rates: dict = {}
-        self._asof: dict = {}
-        # Latest row per directed pair only — the fx_rates table grows forever
-        # (one sync every 12h), so never scan all of it.
-        from sqlalchemy import func, select
-        latest_ids = (
-            select(func.max(FxRate.id)).group_by(FxRate.base, FxRate.quote)
-        )
-        for r in db.query(FxRate).filter(FxRate.id.in_(latest_ids)).all():
-            self._rates[(r.base, r.quote)] = r.rate
-            self._asof[(r.base, r.quote)] = r.as_of
-
-    def as_of(self, frm: str, to: str):
-        return self._asof.get((frm.upper(), to.upper()))
-
-    def rate(self, frm: str, to: str) -> Optional[float]:
-        frm, to = frm.upper(), to.upper()
-        if frm == to:
-            return 1.0
-        direct = self._rates.get((frm, to))
-        if direct:
-            return direct
-        inv = self._rates.get((to, frm))
-        if inv:
-            return 1.0 / inv
-        if frm != "USD" and to != "USD":
-            leg1, leg2 = self._rates.get((frm, "USD")), self._rates.get(("USD", to))
-            if not leg1 and self._rates.get(("USD", frm)):
-                leg1 = 1.0 / self._rates[("USD", frm)]
-            if not leg2 and self._rates.get((to, "USD")):
-                leg2 = 1.0 / self._rates[(to, "USD")]
-            if leg1 and leg2:
-                return leg1 * leg2
-        return None
-
-    def to_base(self, amount: Optional[float], ccy: str, base: str) -> Optional[float]:
-        if amount is None:
-            return None
-        if ccy == base:
-            return float(amount)
-        r = self.rate(ccy, base)
-        return None if r is None else float(amount) * r
-
-
-def _signed_amount(txn: FinanceTransaction) -> float:
-    if txn.type in ("deposit", "invest", "payout", "income"):
-        return txn.amount
-    if txn.type in ("withdraw", "spend", "tax"):
-        return -txn.amount
-    return 0.0  # transfer handled by paired rows
-
-
-def _to_base(db: Session, amount: Optional[float], ccy: str, base: str) -> Optional[float]:
-    """Convert to base currency, falling back to the raw amount only when the
-    currency already is the base. Returns None when a conversion is needed but
-    no FX rate is available.
-
-    Prefer FxIndex.to_base() in hot paths — this per-call helper hits the DB.
-    """
-    if amount is None:
-        return None
-    if ccy == base:
-        return float(amount)
-    conv = fx_fetcher.convert(db, amount, ccy, base)
-    return conv[0] if conv else None
-
 
 def _month_range(year: int, month: int) -> tuple[date, date]:
     start = date(year, month, 1)
@@ -1056,6 +1161,27 @@ def _clamp_day(year: int, month: int, day: int) -> int:
     return min(day, calendar.monthrange(year, month)[1])
 
 
+def _settled_between(db: Session, start: date, end: date) -> List[FinanceTransaction]:
+    return db.query(FinanceTransaction).filter(
+        FinanceTransaction.transaction_date >= start,
+        FinanceTransaction.transaction_date < end,
+        FinanceTransaction.status == "settled",
+    ).all()
+
+
+def _is_contribution_in(t: FinanceTransaction, accounts: dict, into_types=("investment",)) -> bool:
+    """An incoming transfer leg into an account of `into_types` that did not come
+    from another account of the same class (moving between two brokerages is
+    not new saving)."""
+    acc = accounts.get(t.account_id)
+    if acc is None or acc.account_type not in into_types:
+        return False
+    if t.transaction_type not in C.TRANSFER_TYPES or t.amount <= 0:
+        return False
+    other = accounts.get(t.transfer_account_id)
+    return other is None or other.account_type not in into_types
+
+
 def _month_figures(
     db: Session, year: int, month: int, idx: Optional[FxIndex] = None,
     *, accounts=None, cats=None, txns=None,
@@ -1065,7 +1191,9 @@ def _month_figures(
     emergency_contribution = income − tax − investments − recurring − variable_spend
     (so unspent allowance also flows into the Emergency Fund).
 
-    `accounts` / `cats` / `txns` may be passed pre-loaded (as the current month's
+    Transfers between own accounts are excluded from income and spending;
+    investments are money arriving in investment accounts from elsewhere.
+    `accounts` / `cats` / `txns` may be passed pre-loaded (as the month's
     settled rows) to avoid re-querying — /summary does this.
     """
     idx = idx or FxIndex(db)
@@ -1074,50 +1202,35 @@ def _month_figures(
     start, end = _month_range(year, month)
 
     if txns is None:
-        txns = db.query(FinanceTransaction).filter(
-            FinanceTransaction.date >= start, FinanceTransaction.date < end,
-            FinanceTransaction.status == "settled",
-        ).all()
-
+        txns = _settled_between(db, start, end)
     accounts = ({a.id: a for a in accounts} if accounts is not None
                 else {a.id: a for a in db.query(FinanceAccount).all()})
-    cats = ({c.id: c for c in cats} if cats is not None
-            else {c.id: c for c in db.query(FinanceCategory).all()})
+    cidx = CategoryIndex(cats if cats is not None else db.query(FinanceCategory).all())
 
-    def base_amt(t: FinanceTransaction) -> float:
-        v = idx.to_base(t.amount, t.currency, base)
-        return v if v is not None else 0.0
+    def b(t: FinanceTransaction) -> float:
+        return ledger.base_value(t, idx, base)
 
     # Income: prefer logged income transactions, else the profile assumption.
-    income_txn_total = sum(base_amt(t) for t in txns if t.type == "income")
+    income_txn_total = sum(b(t) for t in txns if t.transaction_type in C.INCOME_TYPES)
     if income_txn_total > 0:
         income_base = income_txn_total
     else:
         inc = profile.monthly_income or 0.0
         income_base = idx.to_base(inc, profile.income_currency or base, base) or 0.0
 
-    tax_txn_total = sum(base_amt(t) for t in txns if t.type == "tax")
+    spend_rows = [t for t in txns if t.transaction_type in C.SPEND_TYPES + ("refund",)]
+    tax_txn_total = -sum(b(t) for t in spend_rows if cidx.kind(t.category_id) == "tax")
     tax_base = tax_txn_total if tax_txn_total > 0 else float(profile.tax_reserve or 0.0)
 
-    investments_base = sum(
-        base_amt(t) for t in txns
-        if t.type in ("deposit", "invest")
-        and accounts.get(t.account_id) is not None
-        and accounts[t.account_id].account_type == "investment"
-    )
+    investments_base = sum(b(t) for t in txns if _is_contribution_in(t, accounts))
 
     def is_recurring_cost(t: FinanceTransaction) -> bool:
-        if t.recurring_id is not None:
-            return True
-        cat = cats.get(t.category_id)
-        return cat is not None and cat.kind in FIXED_COST_KINDS
+        return (t.recurring_id is not None or t.is_fixed_expense
+                or cidx.kind(t.category_id) in C.FIXED_COST_KINDS)
 
-    recurring_base = sum(
-        base_amt(t) for t in txns if t.type == "spend" and is_recurring_cost(t)
-    )
-    variable_spend_base = sum(
-        base_amt(t) for t in txns if t.type == "spend" and not is_recurring_cost(t)
-    )
+    non_tax = [t for t in spend_rows if cidx.kind(t.category_id) != "tax"]
+    recurring_base = -sum(b(t) for t in non_tax if is_recurring_cost(t))
+    variable_spend_base = -sum(b(t) for t in non_tax if not is_recurring_cost(t))
 
     emergency = (
         income_base - tax_base - investments_base - recurring_base - variable_spend_base
@@ -1161,6 +1274,7 @@ def materialise_recurring(db: Session, today: Optional[date] = None) -> int:
     items = db.query(FinanceRecurring).filter(
         FinanceRecurring.is_active == True  # noqa: E712
     ).all()
+    idx, base = None, None
     for item in items:
         if item.last_run_month == key:
             continue
@@ -1171,28 +1285,36 @@ def materialise_recurring(db: Session, today: Optional[date] = None) -> int:
         charge_day = _clamp_day(today.year, today.month, item.day_of_month)
         if today.day < charge_day:
             continue
-        db.add(FinanceTransaction(
+        if idx is None:
+            idx, base = FxIndex(db), ledger.base_currency(db)
+        sign = 1 if item.type == "income" else -1
+        txn = FinanceTransaction(
             account_id=item.account_id,
-            date=date(today.year, today.month, charge_day),
-            type=item.type,
-            amount=item.amount,
+            transaction_date=date(today.year, today.month, charge_day),
+            description_raw=item.label,
+            transaction_type=item.type,
+            amount=sign * abs(item.amount),
             currency=item.currency,
             status="settled",
             category_id=item.category_id,
             recurring_id=item.id,
-            note=f"Auto: {item.label}",
-        ))
+            source="recurring",
+            notes=f"Auto: {item.label}",
+        )
+        ledger.lock_base_amount(txn, idx, base)
+        db.add(txn)
         item.last_run_month = key
         created += 1
     if created:
         db.commit()
+        invalidate_summary_cache()
     return created
 
 
 def _net_worth_base(db: Session, base: str, idx: Optional[FxIndex] = None) -> float:
     idx = idx or FxIndex(db)
-    accounts = db.query(FinanceAccount).all()
-    bals = _account_balances(db, accounts)
+    accounts = [a for a in db.query(FinanceAccount).all() if a.include_in_net_worth]
+    bals = ledger.account_balances(db, accounts)
     total = 0.0
     for acc in accounts:
         settled, pending = bals[acc.id]
@@ -1251,28 +1373,24 @@ def month_end_maintenance(db: Session, today: Optional[date] = None) -> dict:
     if not recipient:
         return result
 
-    fig = _month_figures(db, rmy, rmm)
+    idx = FxIndex(db)
+    fig = _month_figures(db, rmy, rmm, idx)
     start, end = _month_range(rmy, rmm)
     auto_count = db.query(FinanceTransaction).filter(
-        FinanceTransaction.date >= start, FinanceTransaction.date < end,
+        FinanceTransaction.transaction_date >= start, FinanceTransaction.transaction_date < end,
         FinanceTransaction.recurring_id.isnot(None),
     ).count()
-    over = []
-    for c in db.query(FinanceCategory).filter(
-        FinanceCategory.is_active == True, FinanceCategory.monthly_budget.isnot(None)  # noqa: E712
-    ).all():
-        limit_base = _to_base(db, c.monthly_budget, c.budget_currency or base, base) or 0.0
-        spent = 0.0
-        for t in db.query(FinanceTransaction).filter(
-            FinanceTransaction.date >= start, FinanceTransaction.date < end,
-            FinanceTransaction.status == "settled", FinanceTransaction.type == "spend",
-            FinanceTransaction.category_id == c.id,
-        ).all():
-            spent += _to_base(db, t.amount, t.currency, base) or 0.0
-        if limit_base and spent > limit_base:
-            over.append(f"  • {c.name}: {spent:.0f} / {limit_base:.0f} {base}")
+    pending_review = db.query(FinanceImportTransaction).filter(
+        FinanceImportTransaction.status.in_(("needs_review", "pending", "duplicate"))
+    ).count()
+    cats = db.query(FinanceCategory).all()
+    spent_by_cat, _inc = _category_flows(idx, CategoryIndex(cats), _settled_between(db, start, end), base)
+    over = [
+        f"  • {b['category']}: {b['spent_base']:.0f} / {b['limit_base']:.0f} {base}"
+        for b in _budgets_from_spend(idx, cats, spent_by_cat, base) if b["over"]
+    ]
 
-    nw = _net_worth_base(db, base)
+    nw = _net_worth_base(db, base, idx)
     lines = [
         f"Time to log your transactions for {rm_key}.",
         "",
@@ -1285,13 +1403,15 @@ def month_end_maintenance(db: Session, today: Optional[date] = None) -> dict:
         "",
         f"Recurring items auto-added this month: {auto_count}",
     ]
+    if pending_review:
+        lines += [f"Imported rows waiting in the review queue: {pending_review}"]
     if over:
         lines += ["", "Budgets over limit:"] + over
     lines += [
         "",
         f"Net worth (incl. pending): {nw:.0f} {base}",
         "",
-        "Open the Finance tab to review and complete the month.",
+        "Open the Finance tab to import statements and complete the month.",
     ]
     body = "\n".join(lines)
 
@@ -1307,66 +1427,29 @@ def month_end_maintenance(db: Session, today: Optional[date] = None) -> dict:
 
 # ── Summary (reporting brain) ────────────────────────────────────────────────
 
-def _account_balances(
-    db: Session, accounts: List[FinanceAccount]
-) -> dict:
-    """Batch version of the old per-account balance calc — 2 queries total.
+def _category_flows(idx: FxIndex, cidx: CategoryIndex, month_txns, base_ccy):
+    """(spent_by_top_category, income_by_top_category) in base ccy.
 
-    Returns {account_id: (settled_value, pending_value)} in native currency.
-    Investment accounts: value = latest market valuation (already includes
-    returns/payouts) + pending contributions. Cash accounts: signed sum of
-    settled transactions; pending shown separately.
+    Spending = expenses + fees net of refunds; income = income + interest +
+    dividends. Transfers and adjustments are neither.
     """
-    ids = [a.id for a in accounts]
-    if not ids:
-        return {}
-
-    txns_by_acc: dict = defaultdict(list)
-    for t in db.query(FinanceTransaction).filter(
-        FinanceTransaction.account_id.in_(ids)
-    ).all():
-        txns_by_acc[t.account_id].append(t)
-
-    latest_val: dict = {}
-    for v in db.query(FinanceValuation).filter(
-        FinanceValuation.account_id.in_(ids)
-    ).order_by(FinanceValuation.as_of.desc(), FinanceValuation.id.desc()).all():
-        latest_val.setdefault(v.account_id, v)
-
-    out: dict = {}
-    for acc in accounts:
-        ts = txns_by_acc.get(acc.id, [])
-        pending = sum(t.amount for t in ts
-                      if t.status == "pending" and t.type in ("deposit", "invest"))
-        if acc.account_type == "investment" and acc.id in latest_val:
-            settled = latest_val[acc.id].market_value
-        else:
-            settled = sum(_signed_amount(t) for t in ts if t.status == "settled")
-        out[acc.id] = (settled, pending)
-    return out
-
-
-def _category_flows(idx: "FxIndex", cats, month_txns, base_ccy):
-    """(spent_by_cat_name, income_by_cat_name) for the given month's txns, base ccy."""
-    cat_by_id = {c.id: c for c in cats}
     spent: dict = defaultdict(float)
     income: dict = defaultdict(float)
     for t in month_txns:
-        label = (cat_by_id[t.category_id].name if t.category_id in cat_by_id
-                 else (t.category or "Uncategorised"))
-        amt = idx.to_base(t.amount, t.currency, base_ccy)
-        amt = amt if amt is not None else 0.0
-        if t.type == "spend":
-            spent[label] += amt
-        elif t.type == "income":
+        top = cidx.top(t.category_id)
+        label = top.name if top else "Uncategorised"
+        amt = ledger.base_value(t, idx, base_ccy)
+        if t.transaction_type in C.SPEND_TYPES or t.transaction_type == "refund":
+            spent[label] -= amt
+        elif t.transaction_type in C.INCOME_TYPES + C.INVESTMENT_INCOME_TYPES:
             income[label] += amt
     return spent, income
 
 
-def _budgets_from_spend(idx: "FxIndex", cats, spent_by_cat, base_ccy):
+def _budgets_from_spend(idx: FxIndex, cats, spent_by_cat, base_ccy):
     rows = []
     for c in cats:
-        if not c.is_active or c.monthly_budget is None:
+        if c.parent_id is not None or not c.is_active or c.monthly_budget is None:
             continue
         limit_base = idx.to_base(c.monthly_budget, c.budget_currency or base_ccy, base_ccy)
         spent = round(spent_by_cat.get(c.name, 0.0), 2)
@@ -1393,17 +1476,12 @@ def budgets_endpoint(_: User = Depends(require_admin), db: Session = Depends(get
     cats = db.query(FinanceCategory).order_by(
         FinanceCategory.sort_order.asc(), FinanceCategory.name.asc()
     ).all()
-    m_txns = db.query(FinanceTransaction).filter(
-        FinanceTransaction.date >= m_start, FinanceTransaction.date < m_end,
-        FinanceTransaction.status == "settled",
-    ).all()
-    spent, _income = _category_flows(idx, cats, m_txns, base_ccy)
+    spent, _income = _category_flows(idx, CategoryIndex(cats), _settled_between(db, m_start, m_end), base_ccy)
     return {"base_currency": base_ccy, "budgets": _budgets_from_spend(idx, cats, spent, base_ccy)}
 
 
 # Short-lived cache for /summary: admin-only, read-heavy, hit from both the
-# dashboard and (indirectly) other views. 15s stale is invisible because edits
-# never happen on the dashboard.
+# dashboard and (indirectly) other views. Writes through this router clear it.
 _SUMMARY_TTL = 15.0
 _summary_cache: dict = {}   # as_of_key -> (expires_at, payload)
 
@@ -1422,6 +1500,7 @@ def summary(
     accounts = db.query(FinanceAccount).order_by(
         FinanceAccount.sort_order.asc(), FinanceAccount.id.asc()
     ).all()
+    acc_by_id = {a.id: a for a in accounts}
 
     base_ccy = profile.base_currency or "SGD"
     idx = FxIndex(db)
@@ -1436,14 +1515,9 @@ def summary(
     for _k in range(3):
         py, pm = (hist_start.year, hist_start.month - 1) if hist_start.month > 1 else (hist_start.year - 1, 12)
         hist_start = date(py, pm, 1)
-    m_end = _month_range(today.year, today.month)[1]
-    hist_txns = db.query(FinanceTransaction).filter(
-        FinanceTransaction.date >= hist_start,
-        FinanceTransaction.date < m_end,
-        FinanceTransaction.status == "settled",
-    ).all()
-    m_start = _month_range(today.year, today.month)[0]
-    m_txns = [t for t in hist_txns if t.date >= m_start]
+    m_start, m_end = _month_range(today.year, today.month)
+    hist_txns = _settled_between(db, hist_start, m_end)
+    m_txns = [t for t in hist_txns if t.transaction_date >= m_start]
 
     by_currency_settled: dict = defaultdict(float)
     by_currency_pending: dict = defaultdict(float)
@@ -1452,14 +1526,13 @@ def summary(
 
     net_base_settled = 0.0
     net_base_after_pending = 0.0
-    bals = _account_balances(db, accounts)
+    liabilities_base = 0.0
+    bals = ledger.account_balances(db, accounts)
+    contributions = ledger.net_contributions(db, [a for a in accounts if a.account_type == "investment"])
 
     for acc in accounts:
         settled, pending = bals[acc.id]
         after = settled + pending
-        by_currency_settled[acc.currency] += settled
-        by_currency_pending[acc.currency] += pending
-
         settled_base = idx.to_base(settled, acc.currency, base_ccy)
         after_base = idx.to_base(after, acc.currency, base_ccy)
         if acc.currency != base_ccy and idx.rate(acc.currency, base_ccy) is not None:
@@ -1468,19 +1541,32 @@ def summary(
                 "rate": idx.rate(acc.currency, base_ccy),
                 "as_of": ao.isoformat() if ao else None,
             }
-        if settled_base is not None:
-            net_base_settled += settled_base
-        if after_base is not None:
-            net_base_after_pending += after_base
+        if acc.include_in_net_worth:
+            by_currency_settled[acc.currency] += settled
+            by_currency_pending[acc.currency] += pending
+            if settled_base is not None:
+                net_base_settled += settled_base
+            if after_base is not None:
+                net_base_after_pending += after_base
+            if acc.account_type == "liability" and settled_base is not None:
+                liabilities_base += -settled_base
+
+        gain = None
+        if acc.account_type == "investment":
+            # Decision D7: unrealised gain = market value − net contributions.
+            gain = round(settled - contributions.get(acc.id, 0.0), 2)
 
         account_rows.append({
             "id": acc.id, "name": acc.name, "institution": acc.institution,
             "account_type": acc.account_type, "currency": acc.currency,
-            "risk_role": acc.risk_role,
+            "risk_role": acc.risk_role, "include_in_net_worth": acc.include_in_net_worth,
             "settled": round(settled, 2), "pending": round(pending, 2),
             "after_pending": round(after, 2),
             "settled_base": round(settled_base, 2) if settled_base is not None else None,
             "after_pending_base": round(after_base, 2) if after_base is not None else None,
+            "net_contributions": round(contributions[acc.id], 2) if acc.id in contributions else None,
+            "investment_gain": gain,
+            "investment_gain_base": round(_b(gain, acc.currency), 2) if gain is not None else None,
         })
 
     # Primary goal progress (kept separate from account performance).
@@ -1521,18 +1607,27 @@ def summary(
             "fx_available": goal_rate is not None,
         }
 
-    # This-month savings rate.
-    saved_base = sum(_b(t.amount, t.currency) for t in m_txns if t.type in SAVINGS_IN_TYPES)
+    # This-month savings: money arriving in savings/investment accounts from
+    # elsewhere (transfers between two such accounts are not new saving).
+    saved_base = sum(
+        ledger.base_value(t, idx, base_ccy) for t in m_txns
+        if _is_contribution_in(t, acc_by_id, SAVINGS_ACCOUNT_TYPES)
+    )
     income = idx.to_base(
         profile.monthly_income or 0.0, profile.income_currency or base_ccy, base_ccy
     ) or 0.0
+    logged_income = sum(ledger.base_value(t, idx, base_ccy) for t in m_txns
+                        if t.transaction_type in C.INCOME_TYPES)
+    if logged_income > 0:
+        income = logged_income
     savings_rate = (saved_base / income * 100.0) if income else None
 
     # ── Categories, budgets, top spending/income (this month) ────────────────
     cats = db.query(FinanceCategory).order_by(
         FinanceCategory.sort_order.asc(), FinanceCategory.name.asc()
     ).all()
-    spent_by_cat, income_by_cat = _category_flows(idx, cats, m_txns, base_ccy)
+    cidx = CategoryIndex(cats)
+    spent_by_cat, income_by_cat = _category_flows(idx, cidx, m_txns, base_ccy)
     budgets = _budgets_from_spend(idx, cats, spent_by_cat, base_ccy)
 
     top_spending = sorted(
@@ -1543,19 +1638,24 @@ def summary(
         ({"category": k, "amount_base": round(v, 2)} for k, v in income_by_cat.items() if v > 0),
         key=lambda x: x["amount_base"], reverse=True,
     )[:5]
+    investment_income_base = sum(
+        ledger.base_value(t, idx, base_ccy) for t in m_txns
+        if t.transaction_type in C.INVESTMENT_INCOME_TYPES
+    )
 
     # ── Recent 3 completed months (income vs spending) ─────────────────────
     # Bucketed from the single history query above — no extra round-trips.
     by_month_inc: dict = defaultdict(float)
     by_month_spend: dict = defaultdict(float)
     for t in hist_txns:
-        if t.date >= m_start:
+        if t.transaction_date >= m_start:
             continue
-        key = f"{t.date.year:04d}-{t.date.month:02d}"
-        if t.type == "income":
-            by_month_inc[key] += _b(t.amount, t.currency)
-        elif t.type in ("spend", "tax"):
-            by_month_spend[key] += _b(t.amount, t.currency)
+        key = f"{t.transaction_date.year:04d}-{t.transaction_date.month:02d}"
+        v = ledger.base_value(t, idx, base_ccy)
+        if t.transaction_type in C.INCOME_TYPES + C.INVESTMENT_INCOME_TYPES:
+            by_month_inc[key] += v
+        elif t.transaction_type in C.SPEND_TYPES or t.transaction_type == "refund":
+            by_month_spend[key] -= v
     recent_months = []
     ry, rm = today.year, today.month
     for _i in range(3):
@@ -1590,7 +1690,7 @@ def summary(
             "next_charge_date": nxt.isoformat(),
             "monthly_base": round(monthly_base, 2) if monthly_base is not None else None,
         })
-        if it.type == "spend" and monthly_base:
+        if it.type == "expense" and monthly_base:
             recurring_total_base += monthly_base
 
     # ── Emergency Fund ────────────────────────────────────────────────────
@@ -1672,11 +1772,16 @@ def summary(
             rm_active = False
     reminder = {"active": bool(rm_active), "month": rm_key}
 
+    review_queue = db.query(FinanceImportTransaction).filter(
+        FinanceImportTransaction.status.in_(("needs_review", "duplicate"))
+    ).count()
+
     payload = {
         "base_currency": base_ccy,
         "net_worth": {
             "settled_base": round(net_base_settled, 2),
             "after_pending_base": round(net_base_after_pending, 2),
+            "liabilities_base": round(liabilities_base, 2),
             "by_currency_settled": {k: round(v, 2) for k, v in by_currency_settled.items()},
             "by_currency_pending": {k: round(v, 2) for k, v in by_currency_pending.items()},
         },
@@ -1686,6 +1791,7 @@ def summary(
             "saved_base": round(saved_base, 2),
             "income_base": round(income, 2) if income else None,
             "savings_rate_percent": round(savings_rate, 2) if savings_rate is not None else None,
+            "investment_income_base": round(investment_income_base, 2),
         },
         "budget": {
             "monthly_income": profile.monthly_income,
@@ -1702,6 +1808,7 @@ def summary(
         "emergency_fund": emergency_fund,
         "projection": projection,
         "reminder": reminder,
+        "review_queue_count": review_queue,
         "fx_notes": fx_notes,
         "generated_at": datetime.utcnow().isoformat(),
     }
@@ -1738,7 +1845,7 @@ def import_baseline(_: User = Depends(require_admin), db: Session = Depends(get_
     profile.updated_at = datetime.utcnow()
 
     # Standard spending-category taxonomy
-    _seed_default_categories(db)
+    ledger.seed_default_categories(db)
 
     # Goal
     db.add(FinanceGoal(
@@ -1749,25 +1856,30 @@ def import_baseline(_: User = Depends(require_admin), db: Session = Depends(get_
         is_primary=True,
     ))
 
-    # Accounts (settled balances + pending contributions from the doc)
+    # Accounts. Cash: opening balance. Investments: opening balance = cost basis
+    # (market value − platform total return) so D7's gain matches the platform,
+    # plus the baseline valuation and the pending contribution.
     accounts_spec = [
-        # name, institution, type, currency, risk_role, planned, contrib_ccy,
-        #   settled_balance, pending, market_value, total_return, return_pct
-        ("Bank deposit / cash", "Bank", "cash", "SGD", "liquid",
+        # name, ref, institution, type, currency, risk_role, planned, contrib_ccy,
+        #   cash_balance, pending, market_value, total_return, return_pct
+        ("Bank deposit / cash", "bank_cash_sgd", "Bank", "cash", "SGD", "liquid",
          None, None, 4000.0, 0.0, None, None, None),
-        ("Mari Invest Income", "Mari", "investment", "SGD", "market",
+        ("Mari Invest Income", "mari_invest_income", "Mari", "investment", "SGD", "market",
          1000.0, "SGD", None, 1000.0, 8891.23, -63.22, None),
-        ("Mari Invest SavePlus", "Mari", "investment", "SGD", "low_risk",
+        ("Mari Invest SavePlus", "mari_invest_saveplus", "Mari", "investment", "SGD", "low_risk",
          1000.0, "SGD", None, 1000.0, 1002.03, 2.03, 1.33),
-        ("DBS DigiPortfolio", "DBS", "investment", "USD", "market",
+        ("DBS DigiPortfolio", "dbs_digiportfolio", "DBS", "investment", "USD", "market",
          1000.0, "USD", None, 1000.0, 5089.08, 89.08, 1.78),
     ]
 
+    idx, base = FxIndex(db), "SGD"
     id_by_name = {}
-    for (name, inst, atype, ccy, risk, planned, cc,
-         settled_bal, pending, mv, tr, rp) in accounts_spec:
+    for (name, ref, inst, atype, ccy, risk, planned, cc,
+         cash_bal, pending, mv, tr, rp) in accounts_spec:
+        opening = cash_bal if cash_bal is not None else (mv - (tr or 0.0) if mv is not None else 0.0)
         acc = FinanceAccount(
-            name=name, institution=inst, account_type=atype, currency=ccy,
+            name=name, external_ref=ref, institution=inst, account_type=atype, currency=ccy,
+            opening_balance=round(opening, 2),
             risk_role=risk, liquidity_role=risk,
             planned_monthly_contribution=planned, contribution_currency=cc,
             sort_order=len(id_by_name),
@@ -1776,12 +1888,6 @@ def import_baseline(_: User = Depends(require_admin), db: Session = Depends(get_
         db.flush()
         id_by_name[name] = acc.id
 
-        if atype == "cash" and settled_bal:
-            db.add(FinanceTransaction(
-                account_id=acc.id, date=snapshot, type="deposit",
-                amount=settled_bal, currency=ccy, status="settled",
-                note="Opening balance (Aug 2026 baseline)",
-            ))
         if atype == "investment" and mv is not None:
             db.add(FinanceValuation(
                 account_id=acc.id, as_of=snapshot, market_value=mv, currency=ccy,
@@ -1789,11 +1895,14 @@ def import_baseline(_: User = Depends(require_admin), db: Session = Depends(get_
                 note="Aug 2026 baseline snapshot",
             ))
         if pending:
-            db.add(FinanceTransaction(
-                account_id=acc.id, date=snapshot, type="invest",
-                amount=pending, currency=cc or ccy, status="pending",
-                note="Pending contribution (Aug 2026 baseline)",
-            ))
+            txn = FinanceTransaction(
+                account_id=acc.id, transaction_date=snapshot,
+                description_raw="Pending contribution (Aug 2026 baseline)",
+                transaction_type="investment_contribution",
+                amount=pending, currency=cc or ccy, status="pending", source="manual",
+            )
+            ledger.lock_base_amount(txn, idx, base)
+            db.add(txn)
 
     # DigiPortfolio allocation ~51/47/3
     digi_id = id_by_name.get("DBS DigiPortfolio")
@@ -1811,4 +1920,5 @@ def import_baseline(_: User = Depends(require_admin), db: Session = Depends(get_
     except Exception:  # noqa: BLE001
         pass
 
+    invalidate_summary_cache()
     return {"status": "seeded", "accounts": len(accounts_spec)}

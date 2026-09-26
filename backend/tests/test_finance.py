@@ -1,0 +1,360 @@
+"""End-to-end tests for the finance ledger + statement import pipeline.
+
+Run from backend/:  pip install -r requirements.txt -r requirements-dev.txt && pytest
+Uses a throwaway SQLite file; the admin dependency is overridden.
+"""
+import copy
+import json
+import os
+import sys
+import tempfile
+from datetime import date
+
+import pytest
+
+_DB = os.path.join(tempfile.mkdtemp(), "finance_test.db")
+os.environ["DATABASE_URL"] = f"sqlite:///{_DB}"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine, inspect, text  # noqa: E402
+
+from auth_utils import require_admin  # noqa: E402
+from database import Base, engine  # noqa: E402
+from finance import constants as C  # noqa: E402
+from finance.import_validation import IMPORT_SCHEMA  # noqa: E402
+from models import FxRate  # noqa: E402
+from routers import finance, finance_imports  # noqa: E402
+
+TODAY = date.today()
+THIS_MONTH = TODAY.replace(day=1)
+
+
+@pytest.fixture()
+def client():
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    finance.invalidate_summary_cache()
+    app = FastAPI()
+    app.include_router(finance.router)
+    app.include_router(finance_imports.router)
+    app.dependency_overrides[require_admin] = lambda: None
+    c = TestClient(app)
+    # FX: 1 USD = 1.35 SGD
+    from database import SessionLocal
+    db = SessionLocal()
+    db.add(FxRate(base="USD", quote="SGD", rate=1.35))
+    db.commit()
+    db.close()
+    assert c.post("/finance/categories/seed-defaults").status_code == 200
+    return c
+
+
+def _acct(c, **kw):
+    body = {"name": "Acct", "account_type": "cash", "currency": "SGD", **kw}
+    r = c.post("/finance/accounts", json=body)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _cat_id(c, name, parent=None):
+    cats = c.get("/finance/categories").json()
+    parent_id = None
+    if parent:
+        parent_id = next(x["id"] for x in cats if x["name"] == parent and x["parent_id"] is None)
+    return next(x["id"] for x in cats if x["name"] == name and x["parent_id"] == parent_id)
+
+
+def _balances(c):
+    return {a["external_ref"] or a["name"]: a["balance"] for a in c.get("/finance/accounts").json()}
+
+
+# ── Ledger ───────────────────────────────────────────────────────────────────
+
+def test_schema_enums_match_constants():
+    d = IMPORT_SCHEMA["$defs"]
+    assert d["transactionType"]["enum"] == list(C.TRANSACTION_TYPES)
+    assert d["accountType"]["enum"] == list(C.ACCOUNT_TYPES)
+    assert d["currency"]["enum"] == list(C.CURRENCIES)
+    assert d["warningType"]["enum"] == list(C.WARNING_TYPES)
+    assert IMPORT_SCHEMA["properties"]["schema_version"]["const"] == C.IMPORT_SCHEMA_VERSION
+
+
+def test_default_categories_have_subcategories(client):
+    cats = client.get("/finance/categories").json()
+    food = next(c for c in cats if c["name"] == "Food" and c["parent_id"] is None)
+    subs = {c["name"] for c in cats if c["parent_id"] == food["id"]}
+    assert {"Groceries", "Restaurant"} <= subs
+    # Idempotent
+    assert client.post("/finance/categories/seed-defaults").json()["added"] == 0
+
+
+def test_manual_expense_and_balance(client):
+    _acct(client, name="DBS", external_ref="dbs", opening_balance=1000)
+    groceries = _cat_id(client, "Groceries", parent="Food")
+    r = client.post("/finance/transactions", json={
+        "account_id": 1, "transaction_date": str(TODAY), "transaction_type": "expense",
+        "amount": -50, "description_raw": "NTUC", "category_id": groceries,
+    })
+    assert r.status_code == 201, r.text
+    t = r.json()
+    assert t["currency"] == "SGD" and t["amount_base"] == -50 and t["source"] == "manual"
+    assert _balances(client)["dbs"] == 950
+
+
+def test_transfer_two_legs_not_cashflow(client):
+    _acct(client, name="DBS", external_ref="dbs", opening_balance=1000)
+    _acct(client, name="Robo", external_ref="robo", account_type="investment", currency="USD")
+    r = client.post("/finance/transactions/transfer", json={
+        "from_account_id": 1, "to_account_id": 2, "amount": 135,
+        "transaction_date": str(TODAY), "transaction_type": "investment_contribution",
+    })
+    assert r.status_code == 201, r.text
+    legs = r.json()
+    assert len(legs) == 2 and legs[0]["transfer_group_id"] == legs[1]["transfer_group_id"]
+    bal = _balances(client)
+    assert bal["dbs"] == 865 and bal["robo"] == 100  # 135 SGD → 100 USD
+
+    s = client.get("/finance/summary").json()
+    assert s["top_spending"] == []                     # a transfer is not spending
+    assert s["this_month"]["saved_base"] == pytest.approx(135)
+    robo = next(a for a in s["accounts"] if a["name"] == "Robo")
+    assert robo["net_contributions"] == 100 and robo["investment_gain"] == 0
+
+    # A valuation above contributions shows as gain (D7).
+    client.post("/finance/valuations", json={
+        "account_id": 2, "as_of": str(TODAY), "market_value": 110, "currency": "USD"})
+    finance.invalidate_summary_cache()
+    s = client.get("/finance/summary").json()
+    robo = next(a for a in s["accounts"] if a["name"] == "Robo")
+    assert robo["investment_gain"] == 10
+
+    # Deleting one leg deletes both.
+    client.delete(f"/finance/transactions/{legs[0]['id']}")
+    assert client.get("/finance/transactions").json() == []
+
+
+def test_liability_reduces_net_worth(client):
+    _acct(client, name="DBS", opening_balance=1000)
+    _acct(client, name="Card", account_type="liability", opening_balance=-200)
+    s = client.get("/finance/summary").json()
+    assert s["net_worth"]["settled_base"] == 800
+    assert s["net_worth"]["liabilities_base"] == 200
+
+
+def test_month_figures_exclude_transfers(client):
+    _acct(client, name="DBS", external_ref="dbs")
+    _acct(client, name="Robo", external_ref="robo", account_type="investment")
+    salary = _cat_id(client, "Salary", parent="Income")
+    tax = _cat_id(client, "Tax")
+    for body in (
+        {"transaction_type": "income", "amount": 5000, "category_id": salary},
+        {"transaction_type": "expense", "amount": -300, "category_id": tax},
+        {"transaction_type": "expense", "amount": -200},
+        {"transaction_type": "refund", "amount": 20},
+    ):
+        client.post("/finance/transactions", json={
+            "account_id": 1, "transaction_date": str(THIS_MONTH), **body})
+    client.post("/finance/transactions/transfer", json={
+        "from_account_id": 1, "to_account_id": 2, "amount": 1000,
+        "transaction_date": str(THIS_MONTH), "transaction_type": "investment_contribution"})
+    r = client.post(f"/finance/monthly-close/{THIS_MONTH:%Y-%m}").json()
+    assert r["income_base"] == 5000
+    assert r["tax_base"] == 300
+    assert r["investments_base"] == 1000
+    assert r["variable_spend_base"] == 180
+    assert r["emergency_contribution_base"] == 5000 - 300 - 1000 - 180
+
+
+def test_recurring_materialises_signed(client):
+    _acct(client, name="DBS")
+    client.post("/finance/recurring", json={
+        "label": "Spotify", "amount": 12, "day_of_month": 1, "account_id": 1})
+    assert finance.materialise_recurring(finance_db(), TODAY) == 1
+    t = client.get("/finance/transactions").json()[0]
+    assert t["amount"] == -12 and t["transaction_type"] == "expense" and t["source"] == "recurring"
+
+
+def finance_db():
+    from database import SessionLocal
+    return SessionLocal()
+
+
+# ── Import pipeline ──────────────────────────────────────────────────────────
+
+PAYLOAD = {
+    "schema_version": "1.1",
+    "statement": {"institution": "DBS", "statement_period_start": "2026-09-01",
+                  "statement_period_end": "2026-09-30", "source_currency": "SGD"},
+    "accounts": [
+        {"external_account_ref": "dbs", "account_name": "DBS Multiplier",
+         "account_type": "savings", "currency": "SGD", "statement_closing_balance": 3799.5},
+        {"external_account_ref": "robo", "account_name": "digiPortfolio",
+         "account_type": "investment", "currency": "SGD"},
+    ],
+    "transactions": [
+        {"account_ref": "dbs", "transaction_date": "2026-09-01", "description_raw": "SALARY ACME",
+         "transaction_type": "income", "amount": 5000, "currency": "SGD",
+         "category": "income", "subcategory": "salary", "confidence": 0.99},
+        {"account_ref": "dbs", "transaction_date": "2026-09-03", "description_raw": "GRAB *RIDE 123",
+         "transaction_type": "expense", "amount": -18.5, "currency": "SGD",
+         "category": "uncategorised", "needs_review": True, "confidence": 0.4},
+        {"account_ref": "dbs", "transaction_date": "2026-09-05", "description_raw": "TO DIGIPORTFOLIO",
+         "transaction_type": "investment_contribution", "amount": -1000, "currency": "SGD",
+         "category": "investment", "transfer_account_ref": "robo", "confidence": 0.95},
+        {"account_ref": "dbs", "transaction_date": "2026-09-06", "description_raw": "COLD STORAGE",
+         "transaction_type": "expense", "amount": -182, "currency": "SGD",
+         "category": "food", "subcategory": "groceries", "confidence": 0.9},
+    ],
+    "warnings": [{"type": "uncertain_category", "message": "Grab ride unclear", "transaction_index": 1}],
+}
+
+
+def test_schema_gate_rejects_bad_payload(client):
+    bad = copy.deepcopy(PAYLOAD)
+    bad["transactions"][0]["surprise"] = 1
+    bad["transactions"][1]["transaction_type"] = "spend"
+    r = client.post("/finance/imports", content=json.dumps(bad))
+    assert r.status_code == 422
+    errs = r.json()["detail"]["errors"]
+    assert any("surprise" in e for e in errs) and any("spend" in e for e in errs)
+
+    bad = copy.deepcopy(PAYLOAD)
+    bad["transactions"][0]["account_ref"] = "nope"
+    r = client.post("/finance/imports", content=json.dumps(bad))
+    assert r.status_code == 422 and "unknown account_ref" in r.text
+
+
+def test_import_review_approve_flow(client):
+    r = client.post("/finance/imports", content=json.dumps(PAYLOAD))
+    assert r.status_code == 201, r.text
+    imp = r.json()
+    iid = imp["id"]
+    # Accounts don't exist yet → every row needs review.
+    assert imp["counts"]["needs_review"] == 4
+
+    created = client.post(f"/finance/imports/{iid}/accounts").json()["created"]
+    assert created == ["dbs", "robo"]
+    q = {row["line_index"]: row for row in client.get(f"/finance/imports/{iid}/queue").json()}
+    assert q[0]["status"] == "pending" and q[0]["category_id"] == _cat_id(client, "Salary", parent="Income")
+    assert q[1]["status"] == "needs_review"
+    assert {"uncategorised", "ai_flagged_needs_review", "low_confidence"} <= set(q[1]["review_reasons"])
+    assert q[2]["status"] == "pending" and q[3]["status"] == "pending"
+
+    # Fix the Grab row and remember a rule for next time.
+    taxi = _cat_id(client, "Taxi / ride-hailing", parent="Transport")
+    r = client.patch(f"/finance/imports/rows/{q[1]['id']}", json={
+        "category_id": taxi, "merchant_normalized": "Grab", "remember_rule": True, "rule_auto_approve": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "pending" and r.json()["review_reasons"] == []
+
+    r = client.post(f"/finance/imports/{iid}/approve", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["promoted"] == 4
+    txns = client.get("/finance/transactions").json()
+    assert len(txns) == 5                       # 4 rows + the counter leg of the contribution
+    legs = [t for t in txns if t["transaction_type"] == "investment_contribution"]
+    assert sorted(t["amount"] for t in legs) == [-1000, 1000]
+    assert legs[0]["transfer_group_id"] == legs[1]["transfer_group_id"]
+    bal = _balances(client)
+    assert bal["dbs"] == pytest.approx(5000 - 18.5 - 1000 - 182) and bal["robo"] == 1000
+
+    # Closing balance 3799.50 matches → no mismatch warning.
+    detail = client.get(f"/finance/imports/{iid}").json()
+    assert detail["import"]["status"] == "completed"
+    assert not [w for w in detail["warnings"] if w["type"] == "account_balance_mismatch"]
+
+    # Re-importing the same statement: every row flagged as a possible duplicate.
+    r = client.post("/finance/imports", content=json.dumps(PAYLOAD)).json()
+    assert r["counts"]["duplicate"] == 4
+    assert client.post(f"/finance/imports/{r['id']}/approve", json={}).json()["promoted"] == 0
+
+    # The remembered rule classifies (and auto-approves) a new Grab charge.
+    new = copy.deepcopy(PAYLOAD)
+    new["transactions"] = [dict(PAYLOAD["transactions"][1], transaction_date="2026-10-02",
+                                description_raw="GRAB *RIDE 999")]
+    new["accounts"], new["warnings"] = [], []
+    r = client.post("/finance/imports", content=json.dumps(new)).json()
+    row = client.get(f"/finance/imports/{r['id']}/queue").json()[0]
+    assert row["category_id"] == taxi and row["status"] == "pending" and row["rule_id"]
+
+
+def test_import_links_counter_statement(client):
+    """Importing the brokerage statement after the bank's links to the leg the
+    bank import already created instead of double-counting the transfer."""
+    _acct(client, name="DBS", external_ref="dbs")
+    _acct(client, name="Robo", external_ref="robo", account_type="investment")
+    bank = copy.deepcopy(PAYLOAD)
+    bank["transactions"] = [PAYLOAD["transactions"][2]]
+    bank["accounts"], bank["warnings"] = [], []
+    iid = client.post("/finance/imports", content=json.dumps(bank)).json()["id"]
+    client.post(f"/finance/imports/{iid}/approve", json={})
+
+    broker = copy.deepcopy(bank)
+    broker["transactions"] = [{
+        "account_ref": "robo", "transaction_date": "2026-09-06", "description_raw": "Deposit from DBS",
+        "transaction_type": "investment_contribution", "amount": 1000, "currency": "SGD",
+        "category": "investment", "transfer_account_ref": "dbs", "confidence": 0.9}]
+    iid = client.post("/finance/imports", content=json.dumps(broker)).json()["id"]
+    assert client.post(f"/finance/imports/{iid}/approve", json={}).json()["promoted"] == 1
+    txns = client.get("/finance/transactions").json()
+    assert len(txns) == 2
+    robo_leg = next(t for t in txns if t["account_id"] == 2)
+    assert robo_leg["source"] == "import" and robo_leg["description_raw"] == "Deposit from DBS"
+
+
+def test_import_settles_matching_pending_contribution(client):
+    _acct(client, name="DBS", external_ref="dbs")
+    _acct(client, name="Robo", external_ref="robo", account_type="investment")
+    client.post("/finance/transactions", json={
+        "account_id": 2, "transaction_date": "2026-09-04", "transaction_type": "investment_contribution",
+        "amount": 1000, "status": "pending"})
+    p = copy.deepcopy(PAYLOAD)
+    p["transactions"] = [PAYLOAD["transactions"][2]]
+    p["accounts"], p["warnings"] = [], []
+    iid = client.post("/finance/imports", content=json.dumps(p)).json()["id"]
+    client.post(f"/finance/imports/{iid}/approve", json={})
+    txns = client.get("/finance/transactions").json()
+    assert len(txns) == 2                               # linked, not a third leg
+    robo = next(t for t in txns if t["account_id"] == 2)
+    assert robo["status"] == "settled" and robo["transfer_group_id"]
+
+
+def test_balance_mismatch_warning(client):
+    _acct(client, name="DBS", external_ref="dbs", account_type="savings")
+    p = copy.deepcopy(PAYLOAD)
+    p["transactions"] = [PAYLOAD["transactions"][0]]
+    p["accounts"] = [PAYLOAD["accounts"][0]]            # claims closing 3799.50
+    iid = client.post("/finance/imports", content=json.dumps(p)).json()["id"]
+    client.post(f"/finance/imports/{iid}/approve", json={})
+    warnings = client.get(f"/finance/imports/{iid}").json()["warnings"]
+    assert any(w["type"] == "account_balance_mismatch" for w in warnings)
+
+
+def test_prompt_lists_live_categories_and_accounts(client):
+    _acct(client, name="DBS", external_ref="dbs")
+    p = client.get("/finance/imports/prompt").json()["prompt"]
+    assert "- dbs: DBS" in p and "taxi_ride_hailing" in p and '"1.1"' in p
+
+
+# ── Legacy reset ─────────────────────────────────────────────────────────────
+
+def test_reset_legacy_finance(monkeypatch, tmp_path):
+    import main
+
+    eng = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+    with eng.begin() as conn:
+        conn.execute(text("CREATE TABLE finance_transactions (id INTEGER PRIMARY KEY, type VARCHAR, date DATE)"))
+        conn.execute(text("CREATE TABLE finance_accounts (id INTEGER PRIMARY KEY, name VARCHAR)"))
+        conn.execute(text("CREATE TABLE finance_profile (id INTEGER PRIMARY KEY, base_currency VARCHAR)"))
+        conn.execute(text("INSERT INTO finance_profile (id, base_currency) VALUES (1, 'SGD')"))
+    monkeypatch.setattr(main, "engine", eng)
+    main._reset_legacy_finance()
+    tables = set(inspect(eng).get_table_names())
+    assert "finance_transactions" not in tables and "finance_accounts" not in tables
+    assert "finance_profile" in tables                 # config is kept
+
+    Base.metadata.create_all(bind=eng)
+    main._reset_legacy_finance()                        # new schema → no-op
+    assert "transaction_type" in {c["name"] for c in inspect(eng).get_columns("finance_transactions")}

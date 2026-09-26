@@ -4,7 +4,7 @@ import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from auth_utils import hash_password
 from database import Base, SessionLocal, engine
@@ -15,7 +15,7 @@ from news_fetcher import cleanup_old_articles, run_fetch_cycle
 from routers import auth, health, system, users
 from routers import news as news_router
 from routers import tasks as tasks_router
-from routers import about, announcements, events, family_tree, finance, invites, posts, projects, utils as utils_router
+from routers import about, announcements, events, family_tree, finance, finance_imports, invites, posts, projects, utils as utils_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -98,6 +98,7 @@ def _finance_month_end_job() -> None:
 
 @app.on_event("startup")
 def startup() -> None:
+    _reset_legacy_finance()
     Base.metadata.create_all(bind=engine)
     _run_migrations()
     _seed_admin()
@@ -139,9 +140,7 @@ def _run_migrations() -> None:
         ("users", "is_suspended",       "BOOLEAN DEFAULT FALSE"),
         ("users", "suspended_until",    "TIMESTAMP"),
         ("users", "suspension_reason",  "VARCHAR"),
-        # Finance Tracker refinement (categories, recurring, emergency fund)
-        ("finance_transactions", "category_id",  "INTEGER"),
-        ("finance_transactions", "recurring_id", "INTEGER"),
+        # Finance Tracker refinement (emergency fund)
         ("finance_profile",      "emergency_fund_opening", "FLOAT"),
         ("finance_profile",      "alert_email",            "VARCHAR"),
     ]
@@ -151,6 +150,34 @@ def _run_migrations() -> None:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
         except Exception:
             pass
+
+
+# Ledger tables replaced by the signed-amount / two-leg-transfer model
+# (docs/finance/decisions.md). Profile, goals and FX rates are kept.
+_LEGACY_FINANCE_TABLES = (
+    "finance_transactions", "finance_accounts", "finance_valuations",
+    "finance_allocations", "finance_categories", "finance_recurring",
+    "finance_monthly_close",
+)
+
+
+def _reset_legacy_finance() -> None:
+    """One-time switch to the new finance ledger: if finance_transactions still
+    has the old schema (no transaction_type column), drop the old ledger tables
+    so create_all builds the new ones. A no-op on every later start."""
+    insp = inspect(engine)
+    if not insp.has_table("finance_transactions"):
+        return
+    cols = {c["name"] for c in insp.get_columns("finance_transactions")}
+    if "transaction_type" in cols:
+        return
+    dropped = []
+    with engine.begin() as conn:
+        for table in _LEGACY_FINANCE_TABLES:
+            if insp.has_table(table):
+                conn.execute(text(f"DROP TABLE {table}"))
+                dropped.append(table)
+    logging.getLogger(__name__).warning("finance: dropped legacy ledger tables %s", dropped)
 
 
 def _seed_admin() -> None:
@@ -189,3 +216,4 @@ app.include_router(projects.router)
 app.include_router(tasks_router.router)
 app.include_router(about.router)
 app.include_router(finance.router)
+app.include_router(finance_imports.router)

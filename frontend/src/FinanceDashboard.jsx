@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Wallet, Target, TrendingUp, PiggyBank, AlertTriangle, RefreshCw, Info,
-  ShieldCheck, CalendarClock, Repeat,
+  ShieldCheck, CalendarClock, Repeat, FileUp,
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend,
@@ -47,7 +47,7 @@ const ChartCard = ({ title, hint, children }) => (
 
 // ── dashboard ────────────────────────────────────────────────────────────────
 
-const FinanceDashboard = ({ refreshTick = 0 }) => {
+const FinanceDashboard = ({ refreshTick = 0, onOpenImport }) => {
   const [summary, setSummary] = useState(null);
   const [valuations, setValuations] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -89,7 +89,7 @@ const FinanceDashboard = ({ refreshTick = 0 }) => {
   // Net-worth-by-account bar data (in base currency)
   const byAccount = useMemo(
     () => (summary?.accounts ?? [])
-      .filter((a) => a.after_pending_base != null)
+      .filter((a) => a.after_pending_base != null && a.include_in_net_worth !== false)
       .map((a) => ({ name: a.name, value: a.after_pending_base })),
     [summary]
   );
@@ -157,6 +157,8 @@ const FinanceDashboard = ({ refreshTick = 0 }) => {
     ? [{ name: "progress", value: Math.min(100, goal.completion_percent), fill: "#6366f1" }]
     : [];
 
+  const investments = summary.accounts.filter((a) => a.account_type === "investment");
+  const reviewCount = summary.review_queue_count || 0;
   const fxMissing = summary.accounts.some((a) => a.after_pending_base == null)
     || (goal && goal.fx_available === false);
 
@@ -191,6 +193,19 @@ const FinanceDashboard = ({ refreshTick = 0 }) => {
         </div>
       )}
 
+      {reviewCount > 0 && (
+        <div className="flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+          <FileUp className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <span className="font-semibold">{reviewCount} imported row{reviewCount === 1 ? "" : "s"} need review.</span>{" "}
+            They don&apos;t count until you approve them.
+          </div>
+          {onOpenImport && (
+            <button onClick={onOpenImport} className="text-amber-700 hover:text-amber-900 text-xs font-bold uppercase">Review</button>
+          )}
+        </div>
+      )}
+
       {fxMissing && (
         <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -202,7 +217,8 @@ const FinanceDashboard = ({ refreshTick = 0 }) => {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <KpiCard icon={Wallet} label={`Net Worth (${base})`}
           value={fmtMoney(nw.after_pending_base, base)}
-          sub={`Settled ${fmtMoney(nw.settled_base, base)} · incl. pending`} />
+          sub={`Settled ${fmtMoney(nw.settled_base, base)} · incl. pending${
+            nw.liabilities_base ? ` · after ${fmtMoney(nw.liabilities_base, base)} owed` : ""}`} />
         <KpiCard icon={ShieldCheck} label="Emergency Fund" accent="text-emerald-600"
           value={fmtMoney(ef.balance_base, base)}
           sub={ef.monthly_target_base != null
@@ -367,6 +383,39 @@ const FinanceDashboard = ({ refreshTick = 0 }) => {
         </ResponsiveContainer>
       </ChartCard>
 
+      {investments.length > 0 && (
+        <ChartCard title="Investment performance" hint="value − net contributions">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-left text-[10px] uppercase tracking-widest text-slate-400 border-b">
+                <tr>
+                  <th className="py-2 pr-3">Account</th>
+                  <th className="py-2 px-3 text-right">Value</th>
+                  <th className="py-2 px-3 text-right">Net contributed</th>
+                  <th className="py-2 pl-3 text-right">Unrealised gain</th>
+                </tr>
+              </thead>
+              <tbody>
+                {investments.map((a) => (
+                  <tr key={a.id} className="border-b last:border-0">
+                    <td className="py-2 pr-3 font-semibold text-slate-700">{a.name}</td>
+                    <td className="py-2 px-3 text-right">{fmtMoney(a.settled, a.currency)}</td>
+                    <td className="py-2 px-3 text-right text-slate-500">{fmtMoney(a.net_contributions, a.currency)}</td>
+                    <td className={`py-2 pl-3 text-right font-semibold ${a.investment_gain < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                      {a.investment_gain > 0 ? "+" : ""}{fmtMoney(a.investment_gain, a.currency)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">
+            Net contributed = opening balance + transfers in − withdrawals. Dividends and interest are income, not gain
+            {tm.investment_income_base ? ` (${fmtMoney(tm.investment_income_base, base)} this month)` : ""}.
+          </p>
+        </ChartCard>
+      )}
+
       {/* Goal progress + currency exposure */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <ChartCard title="Goal progress" hint={goal ? goal.label : ""}>
@@ -423,7 +472,7 @@ const FinanceDashboard = ({ refreshTick = 0 }) => {
 
       <p className="flex items-center gap-1.5 text-[11px] text-slate-400">
         <Info className="w-3.5 h-3.5" />
-        Investment values use each platform&apos;s reported Total Return; payouts are not added on top. Displayed returns are observations, not guarantees.
+        Investment values are the latest valuation plus contributions since. Transfers between your own accounts are never counted as income or spending. Displayed returns are observations, not guarantees.
       </p>
     </div>
   );
