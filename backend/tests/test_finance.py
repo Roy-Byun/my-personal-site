@@ -573,3 +573,22 @@ def test_focus_category_can_still_spend(client):
     assert f["reserved_for_others_base"] == 138
     assert f["spent_base"] == 200 and f["can_still_spend_base"] == 1300
     assert f["category"] == "Gaming"
+
+
+def test_summary_rows_carry_category_ids_for_drilldown(client):
+    _acct(client, name="DBS", external_ref="dbs")
+    food = _cat_id(client, "Food")
+    groceries = _cat_id(client, "Groceries", parent="Food")
+    client.put(f"/finance/categories/{food}", json={"monthly_budget": 200, "budget_currency": "SGD"})
+    for cid, amt in ((groceries, -40), (None, -9)):
+        client.post("/finance/transactions", json={"account_id": 1, "transaction_date": str(THIS_MONTH),
+                                                   "transaction_type": "expense", "amount": amt, "category_id": cid})
+    s = client.get("/finance/summary").json()
+    assert next(b for b in s["budgets"] if b["category"] == "Food")["category_id"] == food
+    tops = {t["category"]: t for t in s["top_spending"]}
+    assert tops["Food"]["category_id"] == food and not tops["Food"]["uncategorised"]
+    assert tops["Uncategorised"]["uncategorised"] is True
+    month = f"{THIS_MONTH:%Y-%m}"
+    # Drill-down queries: a parent includes its subcategories; uncategorised has its own filter.
+    assert [t["amount"] for t in client.get(f"/finance/transactions?category_id={food}&month={month}").json()] == [-40]
+    assert [t["amount"] for t in client.get(f"/finance/transactions?uncategorised=true&month={month}").json()] == [-9]
