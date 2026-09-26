@@ -547,9 +547,12 @@ def list_transactions(
     status: Optional[str] = Query(default=None),
     source: Optional[str] = None,
     import_id: Optional[int] = None,
+    uncategorised: bool = False,
     _: User = Depends(require_admin), db: Session = Depends(get_db),
 ):
     q = db.query(FinanceTransaction)
+    if uncategorised:
+        q = q.filter(FinanceTransaction.category_id.is_(None))
     if account_id is not None:
         q = q.filter(FinanceTransaction.account_id == account_id)
     if category_id is not None:
@@ -1517,7 +1520,7 @@ def _budgets_from_spend(idx: FxIndex, cats, spent_by_cat, base_ccy):
         limit_base = idx.to_base(c.monthly_budget, c.budget_currency or base_ccy, base_ccy)
         spent = round(spent_by_cat.get(c.name, 0.0), 2)
         rows.append({
-            "category": c.name, "kind": c.kind,
+            "category_id": c.id, "category": c.name, "kind": c.kind,
             "limit_base": round(limit_base, 2) if limit_base is not None else None,
             "spent_base": spent,
             "percent": round(spent / limit_base * 100.0, 1) if limit_base else None,
@@ -1771,12 +1774,19 @@ def summary(
     spent_by_cat, income_by_cat = _category_flows(idx, cidx, m_txns, base_ccy)
     budgets = _budgets_from_spend(idx, cats, spent_by_cat, base_ccy)
 
+    # Top-level names are unique, so the name → id map is safe.
+    top_id = {c.name: c.id for c in cats if c.parent_id is None}
+    # "Uncategorised" also collects rows with no category at all, so the
+    # drill-down must fetch those too (flag) — plus the seeded category, if any.
+    def _top_row(k, v):
+        return {"category_id": top_id.get(k), "category": k, "amount_base": round(v, 2),
+                "uncategorised": k == "Uncategorised"}
     top_spending = sorted(
-        ({"category": k, "amount_base": round(v, 2)} for k, v in spent_by_cat.items() if v > 0),
+        (_top_row(k, v) for k, v in spent_by_cat.items() if v > 0),
         key=lambda x: x["amount_base"], reverse=True,
     )[:5]
     top_income = sorted(
-        ({"category": k, "amount_base": round(v, 2)} for k, v in income_by_cat.items() if v > 0),
+        (_top_row(k, v) for k, v in income_by_cat.items() if v > 0),
         key=lambda x: x["amount_base"], reverse=True,
     )[:5]
     investment_income_base = sum(

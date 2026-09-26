@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Wallet, Target, TrendingUp, PiggyBank, AlertTriangle, RefreshCw, Info,
-  ShieldCheck, CalendarClock, Repeat, FileUp, Wallet2, CheckCircle2, Gamepad2,
+  ShieldCheck, CalendarClock, Repeat, FileUp, Wallet2, CheckCircle2, Gamepad2, X, ChevronRight,
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend,
@@ -44,6 +44,144 @@ const ChartCard = ({ title, hint, children }) => (
     {children}
   </div>
 );
+
+// ── Drill-down: this month's transactions for one category ──────────────────
+
+const TXN_LABEL = {
+  income: "Income", expense: "Expense", transfer: "Transfer", investment_contribution: "Investment",
+  investment_withdrawal: "Withdrawal", interest: "Interest", dividend: "Dividend", refund: "Refund",
+  fee: "Fee", adjustment: "Adjustment",
+};
+
+async function financeApi(path, opts = {}) {
+  const res = await fetch(`/api/finance${path}`, {
+    credentials: "include",
+    headers: opts.body ? { "Content-Type": "application/json" } : undefined,
+    ...opts,
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => ({}))).detail;
+    throw new Error(typeof detail === "string" ? detail : `Request failed (${res.status})`);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+const CategorySelect = ({ categories, value, onChange }) => {
+  const tops = categories.filter((c) => c.parent_id == null);
+  return (
+    <select value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
+      className="max-w-[12rem] border border-slate-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+      aria-label="Category">
+      <option value="">— uncategorised —</option>
+      {tops.map((t) => {
+        const subs = categories.filter((c) => c.parent_id === t.id);
+        return subs.length === 0 ? <option key={t.id} value={t.id}>{t.name}</option> : (
+          <optgroup key={t.id} label={t.name}>
+            <option value={t.id}>{t.name} (general)</option>
+            {subs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </optgroup>
+        );
+      })}
+    </select>
+  );
+};
+
+const DrillDownPanel = ({ target, month, categories, accounts, base, onClose, onChanged }) => {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(null);
+  const [changed, setChanged] = useState(false);
+  const accName = useMemo(() => Object.fromEntries(accounts.map((a) => [a.id, a.name])), [accounts]);
+
+  useEffect(() => {
+    let alive = true;
+    const qs = `month=${month}`;
+    const reqs = [];
+    if (target.category_id != null) reqs.push(financeApi(`/transactions?category_id=${target.category_id}&${qs}`));
+    if (target.uncategorised) reqs.push(financeApi(`/transactions?uncategorised=true&${qs}`));
+    Promise.all(reqs).then((lists) => {
+      if (!alive) return;
+      const seen = new Set();
+      const all = lists.flat().filter((t) => (seen.has(t.id) ? false : seen.add(t.id)))
+        .filter((t) => t.status === "settled")
+        .sort((a, b) => b.transaction_date.localeCompare(a.transaction_date) || b.id - a.id);
+      setRows(all);
+    }).catch((e) => alive && setErr(e.message));
+    return () => { alive = false; };
+  }, [target, month]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const close = () => { if (changed) onChanged(); onClose(); };
+  const recategorise = async (t, categoryId) => {
+    setSaving(t.id); setErr("");
+    try {
+      const updated = await financeApi(`/transactions/${t.id}`, { method: "PUT", body: JSON.stringify({ category_id: categoryId }) });
+      setRows((rs) => rs.map((r) => (r.id === t.id ? { ...r, ...updated, _moved: true } : r)));
+      setChanged(true);
+    } catch (e) { setErr(e.message); } finally { setSaving(null); }
+  };
+
+  const byId = Object.fromEntries(categories.map((c) => [c.id, c]));
+  const catPath = (id) => {
+    const c = byId[id];
+    if (!c) return "Uncategorised";
+    return c.parent_id && byId[c.parent_id] ? `${byId[c.parent_id].name} › ${c.name}` : c.name;
+  };
+  const spendTotal = (rows || []).filter((t) => !t._moved).reduce((a, t) => a + (t.amount_base ?? 0), 0);
+  const monthName = new Date(`${month}-01T00:00:00`).toLocaleString(undefined, { month: "long", year: "numeric" });
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={`${target.category} transactions`}>
+      <button className="absolute inset-0 bg-black/30" onClick={close} aria-label="Close" />
+      <div className="relative w-full max-w-xl h-full bg-white shadow-2xl flex flex-col">
+        <div className="flex items-start justify-between px-5 py-4 border-b">
+          <div>
+            <h3 className="font-bold text-slate-800">{target.category}</h3>
+            <p className="text-xs text-slate-500">{monthName} · {rows ? `${rows.length} transaction${rows.length === 1 ? "" : "s"}` : "loading…"}
+              {rows && rows.length > 0 && <> · {spendTotal <= 0 ? "spent" : "received"} {fmtMoney(Math.abs(spendTotal), base)}</>}</p>
+          </div>
+          <button onClick={close} className="text-slate-400 hover:text-slate-600" aria-label="Close"><X className="w-5 h-5" /></button>
+        </div>
+        {err && <p className="mx-5 mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
+        <div className="flex-1 overflow-y-auto">
+          {rows && rows.length === 0 && <p className="px-5 py-10 text-center text-sm text-slate-400">No transactions this month.</p>}
+          <ul className="divide-y divide-slate-100">
+            {(rows || []).map((t) => (
+              <li key={t.id} className={`px-5 py-3 ${t._moved ? "bg-emerald-50/60" : ""}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-slate-700 truncate" title={t.description_raw}>
+                      {t.merchant_normalized || t.description_raw || "—"}
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      {t.transaction_date} · {TXN_LABEL[t.transaction_type] || t.transaction_type}
+                      {t.account_id ? ` · ${accName[t.account_id] || `#${t.account_id}`}` : ""}
+                      {t.recurring_id ? " · recurring" : ""}
+                    </div>
+                  </div>
+                  <div className={`text-sm font-semibold whitespace-nowrap ${t.amount < 0 ? "text-slate-800" : "text-emerald-600"}`}>
+                    {t.amount > 0 ? "+" : ""}{fmtMoney(t.amount, t.currency)}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 mt-2">
+                  <CategorySelect categories={categories} value={t.category_id} onChange={(cid) => recategorise(t, cid)} />
+                  {saving === t.id && <span className="text-[11px] text-slate-400">saving…</span>}
+                  {t._moved && saving !== t.id && <span className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> moved to {catPath(t.category_id)}</span>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <p className="px-5 py-3 border-t text-[11px] text-slate-400">Change a category to move a transaction; the dashboard updates when you close this panel. Transfers between your own accounts never appear here.</p>
+      </div>
+    </div>
+  );
+};
 
 // The watched category (e.g. Gaming): how much of this month's allowance is
 // still free for it after the other day-to-day categories keep what they need.
@@ -129,21 +267,25 @@ const FinanceDashboard = ({ refreshTick = 0, onOpenImport }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [asOf, setAsOf] = useState("");
+  const [categories, setCategories] = useState([]);
+  const [drill, setDrill] = useState(null);             // {category_id, category, uncategorised}
   const [reminderHidden, setReminderHidden] = useState(false);
 
   const load = useCallback(async () => {
     setError("");
     try {
       const qs = asOf ? `?as_of=${asOf}` : "";
-      const [s, v, a] = await Promise.all([
+      const [s, v, a, c] = await Promise.all([
         fetch(`/api/finance/summary${qs}`, { credentials: "include" }),
         fetch("/api/finance/valuations", { credentials: "include" }),
         fetch("/api/finance/accounts", { credentials: "include" }),
+        fetch("/api/finance/categories", { credentials: "include" }),
       ]);
       if (!s.ok) throw new Error("Failed to load summary");
       setSummary(await s.json());
       setValuations(v.ok ? await v.json() : []);
       setAccounts(a.ok ? await a.json() : []);
+      setCategories(c.ok ? await c.json() : []);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -233,6 +375,8 @@ const FinanceDashboard = ({ refreshTick = 0, onOpenImport }) => {
     : [];
 
   const al = summary.allowance;
+  const now = new Date();
+  const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const investments = summary.accounts.filter((a) => a.account_type === "investment");
   const reviewCount = summary.review_queue_count || 0;
   const fxMissing = summary.accounts.some((a) => a.after_pending_base == null)
@@ -368,9 +512,10 @@ const FinanceDashboard = ({ refreshTick = 0, onOpenImport }) => {
                 const pct = b.percent ?? 0;
                 const barColor = b.over ? "bg-rose-500" : pct >= 80 ? "bg-amber-500" : "bg-emerald-500";
                 return (
-                  <div key={b.category}>
+                  <button key={b.category} type="button" onClick={() => setDrill({ category_id: b.category_id, category: b.category })}
+                    className="block w-full text-left rounded-lg -mx-1 px-1 py-0.5 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                     <div className="flex justify-between text-xs mb-1">
-                      <span className="font-semibold text-slate-700">{b.category}</span>
+                      <span className="font-semibold text-slate-700 flex items-center gap-0.5">{b.category}<ChevronRight className="w-3 h-3 text-slate-300" /></span>
                       <span className={b.over ? "text-rose-600 font-semibold" : "text-slate-500"}>
                         {fmtMoney(b.spent_base, base)} / {fmtMoney(b.limit_base, base)}
                         {b.percent != null && ` · ${b.percent}%`}
@@ -379,30 +524,34 @@ const FinanceDashboard = ({ refreshTick = 0, onOpenImport }) => {
                     <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
                       <div className={`h-full ${barColor}`} style={{ width: `${Math.min(100, pct)}%` }} />
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
           )}
         </ChartCard>
 
-        <ChartCard title="Top spending this month" hint={`in ${base}`}>
+        <ChartCard title="Top spending this month" hint={`in ${base} · click for details`}>
           {(summary.top_spending || []).length === 0 ? (
             <div className="h-[220px] flex items-center justify-center text-sm text-slate-400">No spending logged yet.</div>
           ) : (
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={summary.top_spending} layout="vertical" margin={{ left: 8, right: 16 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 11, fill: "#64748b" }}
-                  tickFormatter={(v) => v.toLocaleString()} />
-                <YAxis type="category" dataKey="category" width={110}
-                  tick={{ fontSize: 11, fill: "#64748b" }} />
-                <Tooltip formatter={(v) => fmtMoney(v, base)} />
-                <Bar dataKey="amount_base" radius={[0, 6, 6, 0]}>
-                  {summary.top_spending.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <div className="space-y-2.5">
+              {summary.top_spending.map((row, i) => {
+                const max = summary.top_spending[0].amount_base || 1;
+                return (
+                  <button key={row.category} type="button" onClick={() => setDrill(row)}
+                    className="block w-full text-left rounded-lg -mx-1 px-1 py-0.5 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="font-semibold text-slate-700 flex items-center gap-0.5">{row.category}<ChevronRight className="w-3 h-3 text-slate-300" /></span>
+                      <span className="text-slate-600">{fmtMoney(row.amount_base, base)}</span>
+                    </div>
+                    <div className="h-3 rounded-md bg-slate-100 overflow-hidden">
+                      <div className="h-full rounded-md" style={{ width: `${Math.max(2, (row.amount_base / max) * 100)}%`, background: COLORS[i % COLORS.length] }} />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           )}
         </ChartCard>
       </div>
@@ -415,9 +564,12 @@ const FinanceDashboard = ({ refreshTick = 0, onOpenImport }) => {
           ) : (
             <ul className="divide-y divide-slate-100">
               {summary.top_income.map((r) => (
-                <li key={r.category} className="flex justify-between py-2 text-sm">
-                  <span className="text-slate-600">{r.category}</span>
-                  <span className="font-semibold text-slate-800">{fmtMoney(r.amount_base, base)}</span>
+                <li key={r.category}>
+                  <button type="button" onClick={() => setDrill(r)}
+                    className="w-full flex justify-between py-2 text-sm rounded-lg -mx-1 px-1 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <span className="text-slate-600 flex items-center gap-0.5">{r.category}<ChevronRight className="w-3 h-3 text-slate-300" /></span>
+                    <span className="font-semibold text-slate-800">{fmtMoney(r.amount_base, base)}</span>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -546,6 +698,11 @@ const FinanceDashboard = ({ refreshTick = 0, onOpenImport }) => {
             </LineChart>
           </ResponsiveContainer>
         </ChartCard>
+      )}
+
+      {drill && (
+        <DrillDownPanel target={drill} month={thisMonth} categories={categories} accounts={accounts}
+          base={base} onClose={() => setDrill(null)} onChanged={load} />
       )}
 
       <p className="flex items-center gap-1.5 text-[11px] text-slate-400">
