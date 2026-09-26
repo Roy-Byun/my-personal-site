@@ -227,12 +227,9 @@ const Navigation = ({
       <div className="h-16 px-6 flex items-center justify-between">
         {/* Left: logo + desktop nav links */}
         <div className="flex items-center gap-6">
-          <div
-            className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center cursor-pointer shadow-md shrink-0"
-            onClick={() => navigate("home")}
-          >
-            <span className="text-white font-bold text-xl italic tracking-tighter">HH</span>
-          </div>
+          <button type="button" onClick={() => navigate("home")} className="shrink-0" aria-label="HeptaHog Hub home">
+            <img src="/logo.png" alt="HeptaHog Hub" className="w-12 h-12 object-contain" />
+          </button>
 
           <div className="hidden md:flex items-center gap-6 text-sm font-semibold text-slate-600">
             {navLinks(false)}
@@ -305,9 +302,7 @@ const Footer = () => (
   <footer className="bg-white border-t border-slate-200 py-10 px-6 mt-auto">
     <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
       <div className="flex items-center gap-4">
-        <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center font-bold text-white text-xs">
-          HH
-        </div>
+        <img src="/logo.png" alt="" className="w-10 h-10 object-contain" />
         <p className="text-sm font-bold text-slate-800">HeptaHog Hub | SIT DEng Node</p>
       </div>
       <p className="text-xs text-slate-500">© 2026 Roy Byun. Managed via GitHub Actions.</p>

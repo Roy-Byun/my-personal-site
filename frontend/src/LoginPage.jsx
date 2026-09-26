@@ -40,9 +40,7 @@ const LoginPage = ({ onSuccess, onBack }) => {
 
         {/* Logo + title */}
         <div className="flex items-center gap-3 mb-8">
-          <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center shadow-md">
-            <span className="text-white font-bold text-xl italic tracking-tighter">HH</span>
-          </div>
+          <img src="/logo.png" alt="" className="w-14 h-14 object-contain" />
           <div>
             <h1 className="text-lg font-bold text-slate-800">HeptaHog Hub</h1>
             <p className="text-xs text-slate-400">Sign in to continue</p>
