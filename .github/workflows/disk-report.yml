@@ -1,0 +1,141 @@
+name: Disk report (read-only)
+
+# Prints what is using disk space on the Mini PC and which software, services
+# and Docker leftovers look unused. It never deletes or changes anything.
+# Run it from Actions → "Disk report (read-only)" → Run workflow.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      # No checkout on purpose: the workspace still holds the deployed
+      # docker-compose.yml, and checkout would wipe its .env.
+      - name: Report
+        shell: bash
+        run: |
+          set +e
+          section() { echo "::endgroup::"; echo "::group::$1"; echo "===== $1 ====="; }
+          SUDO=""; sudo -n true 2>/dev/null && SUDO="sudo -n"
+          echo "::group::start"
+          echo "runner user: $(id -un)  sudo without password: ${SUDO:+yes}${SUDO:-no}"
+
+          section "System"
+          (lsb_release -ds || grep PRETTY_NAME /etc/os-release) 2>/dev/null
+          uname -r; uptime; nproc; free -h
+          lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null
+
+          section "Filesystems"
+          df -hT -x tmpfs -x devtmpfs -x squashfs -x overlay
+          echo; df -ih / 2>/dev/null
+
+          section "Largest folders on / (2 levels)"
+          timeout 300 $SUDO du -xh -d 2 / 2>/dev/null | sort -rh | head -40
+
+          section "Largest folders in home"
+          timeout 120 du -xh -d 2 "$HOME" 2>/dev/null | sort -rh | head -30
+          for d in .cache .npm .cache/pip .local/share/Trash .vscode-server .cache/ms-playwright; do
+            [ -e "$HOME/$d" ] && du -sh "$HOME/$d" 2>/dev/null
+          done
+
+          section "Files over 200 MB"
+          timeout 300 $SUDO find / -xdev -type f -size +200M -printf '%s\t%TY-%Tm-%Td\t%p\n' 2>/dev/null \
+            | sort -rn | head -40 | awk -F'\t' '{printf "%8.1f MB  %s  %s\n", $1/1048576, $2, $3}'
+
+          section "Logs, temp and crash dumps"
+          journalctl --disk-usage 2>/dev/null
+          $SUDO du -sh /var/log /var/log/journal /var/crash /var/lib/systemd/coredump /tmp /var/tmp /var/cache/apt 2>/dev/null
+          $SUDO find /var/log -type f -size +20M -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -15 \
+            | awk -F'\t' '{printf "%8.1f MB  %s\n", $1/1048576, $2}'
+
+          section "Docker: space"
+          docker system df
+          echo; docker system df -v 2>/dev/null | sed -n '/Build cache usage/q;p'
+
+          section "Docker: images (in use marked *)"
+          used=$(docker ps -a --format '{{.Image}}' | sort -u)
+          docker images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedSince}}' | while IFS=$'\t' read -r name id size age; do
+            mark=" "; echo "$used" | grep -qxF "$name" && mark="*"
+            echo "$used" | grep -qxF "${name%:latest}" && mark="*"
+            printf '%s %-55s %-14s %-10s %s\n' "$mark" "$name" "$id" "$size" "$age"
+          done
+          echo; echo "dangling images: $(docker images -f dangling=true -q | wc -l)"
+
+          section "Docker: containers"
+          docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Size}}'
+
+          section "Docker: volumes (dangling = not used by any container)"
+          docker volume ls --format '{{.Name}}' | while read -r v; do
+            m=$(docker volume inspect -f '{{.Mountpoint}}' "$v")
+            s=$($SUDO du -sh "$m" 2>/dev/null | cut -f1)
+            printf '%-45s %s\n' "$v" "${s:-?}"
+          done
+          echo "dangling:"; docker volume ls -f dangling=true --format '  {{.Name}}'
+
+          section "Docker: container log files"
+          for c in $(docker ps -aq); do
+            f=$(docker inspect -f '{{.LogPath}}' "$c"); n=$(docker inspect -f '{{.Name}}' "$c")
+            s=$($SUDO du -h "$f" 2>/dev/null | cut -f1)
+            echo "${s:-?}  $n"
+          done
+          echo "log driver: $(docker info -f '{{.LoggingDriver}}' 2>/dev/null)"
+
+          section "Postgres database and table sizes"
+          DB=$(docker compose ps -q db 2>/dev/null)
+          if [ -n "$DB" ]; then
+            docker exec "$DB" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+              SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database ORDER BY 1;" -c "
+              SELECT relname AS table, pg_size_pretty(pg_total_relation_size(relid)) AS size, n_live_tup AS rows
+              FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 20;"'
+          else
+            echo "db container not found from $(pwd)"
+          fi
+
+          section "GitHub runner folder"
+          RUNNER_ROOT=$(dirname "$(dirname "$RUNNER_WORKSPACE")")
+          echo "runner root: $RUNNER_ROOT"
+          du -sh "$RUNNER_ROOT"/* 2>/dev/null | sort -rh | head -20
+          du -sh "$RUNNER_ROOT"/_work/* 2>/dev/null | sort -rh
+
+          section "Installed software: largest packages"
+          dpkg-query -Wf '${Installed-Size}\t${Package}\n' 2>/dev/null | sort -rn | head -40 \
+            | awk -F'\t' '{printf "%8.1f MB  %s\n", $1/1024, $2}'
+          echo; echo "packages installed: $(dpkg-query -f '.\n' -W 2>/dev/null | wc -l)"
+
+          section "Installed software: manually installed packages"
+          apt-mark showmanual 2>/dev/null | tr '\n' ' ' | fold -s -w 150; echo
+
+          section "Installed software: removable leftovers (simulated, nothing removed)"
+          apt-get -s autoremove 2>/dev/null | grep -E '^(Remv|[0-9]+ upgraded)'
+          echo; echo "kernels installed (running: $(uname -r)):"
+          dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print "  "$2, $3}'
+          echo; echo "packages removed but with config left (rc):"
+          dpkg -l 2>/dev/null | awk '/^rc/{print "  "$2}'
+
+          section "Installed software: snap / flatpak / npm / pip"
+          command -v snap >/dev/null && { snap list --all; echo; du -sh /var/lib/snapd 2>/dev/null; }
+          command -v flatpak >/dev/null && flatpak list --columns=application,size
+          command -v npm >/dev/null && { echo "npm global:"; npm ls -g --depth=0 2>/dev/null; }
+          command -v pip3 >/dev/null && { echo "pip user packages:"; pip3 list --user 2>/dev/null | head -40; }
+          command -v pm2 >/dev/null && pm2 list
+
+          section "Services"
+          echo "running:"; systemctl list-units --type=service --state=running --no-pager --no-legend | awk '{print "  "$1}'
+          echo; echo "enabled but not running:"
+          for u in $(systemctl list-unit-files --type=service --state=enabled --no-pager --no-legend | awk '{print $1}'); do
+            systemctl is-active --quiet "$u" || echo "  $u"
+          done
+          echo; echo "failed:"; systemctl --failed --no-pager --no-legend
+          echo; echo "timers:"; systemctl list-timers --no-pager --no-legend | awk '{print "  "$(NF-1), $NF}'
+
+          section "Listening ports"
+          ss -tlnp 2>/dev/null || ss -tln
+
+          section "Tailscale"
+          tailscale version 2>/dev/null | head -1
+          tailscale serve status 2>/dev/null
+          tailscale funnel status 2>/dev/null
+          echo "::endgroup::"
