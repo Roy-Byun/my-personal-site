@@ -62,3 +62,7 @@ jobs:
           docker compose up -d --remove-orphans
           docker compose restart nginx
           docker image prune -f || true
+          # Keep the build cache from growing without limit: the newest 2 GB
+          # stays so the next build is still fast, older layers are dropped.
+          docker builder prune -a -f --keep-storage 2GB || true
+          docker system df || true
