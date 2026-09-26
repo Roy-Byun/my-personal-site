@@ -79,12 +79,13 @@ export const PAGE_LABELS = {
 // ── Page banner (dark) ───────────────────────────────────────────────────────
 
 function PageBanner({ currentPage }) {
+  const { t } = useT();
   if (currentPage === "home") {
     return (
       <header className="w-full py-20 px-6 bg-slate-800 text-left text-white">
         <div className="max-w-7xl mx-auto">
-          <h1 className="text-4xl md:text-5xl font-extrabold italic mb-4">HeptaHog</h1>
-          <p className="text-slate-300 text-lg max-w-2xl">Hosted on Roika Mini PC Node.</p>
+          <h1 className="text-4xl md:text-5xl font-extrabold italic mb-4">{t("My corner of the internet.")}</h1>
+          <p className="text-slate-300 text-lg max-w-2xl">{t("Everything about me: projects, ideas and more.")}</p>
         </div>
       </header>
     );
