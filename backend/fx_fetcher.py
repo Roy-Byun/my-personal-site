@@ -33,6 +33,7 @@ TRACKED_PAIRS: Tuple[Tuple[str, str], ...] = (
     ("USD", "SGD"),
     ("SGD", "KRW"),
     ("USD", "KRW"),
+    ("SGD", "JPY"),
 )
 
 FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"

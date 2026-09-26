@@ -40,13 +40,17 @@ and your category tree, so it never drifts from the database.
   `investment_withdrawal`, `interest`, `dividend`, `refund`, `fee`, `adjustment`.
 - **Transfer types** (`transfer`, `investment_contribution`, `investment_withdrawal`) should set
   `transfer_account_ref`. On approval the counter leg is created, or linked if the other
-  statement already produced it. An unknown counter ref is flagged, not rejected, because it may
+  statement already produced it. When **both sides are rows of the same file** (e.g. an SGD→USD
+  conversion inside one bank statement), give both rows `transfer_account_ref` pointing at each
+  other: each keeps its exact amount and the two legs are linked. An unknown counter ref is flagged, not rejected, because it may
   be an account you don't track.
 - **`category` / `subcategory`** are slugs of *your* categories (e.g. `taxi_ride_hailing`).
   They're matched case- and punctuation-insensitively against `finance_categories`. Unknown
   values are flagged for review, never rejected. Use `uncategorised` + `needs_review: true`
   when unsure.
-- **Currencies:** SGD, USD, KRW, EUR, GBP.
+- **Currencies:** accounts and `currency` use SGD, USD, KRW, JPY, EUR or GBP. `original_currency`
+  (the currency a purchase was charged in, e.g. JPY in Japan or CAD for an app store) accepts any
+  ISO 4217 code; fill `original_amount` (signed like `amount`) and `exchange_rate` when known.
 - **Closing-balance check:** when `statement_closing_balance` and `statement_period_end` are
   given, approval compares them with the tracker's computed balance on that date. A mismatch is
   recorded as an `account_balance_mismatch` warning.
@@ -75,4 +79,4 @@ exactly the ticked rows, including flagged ones.
   unique across the tree.
 - `accounts[].statement_closing_balance_sgd` became `statement_closing_balance_base`.
   `accounts[].masked_identifier` was added.
-- Currencies were extended to EUR and GBP to match the tracker.
+- Currencies were extended to EUR, GBP and JPY; `original_currency` accepts any ISO 4217 code.

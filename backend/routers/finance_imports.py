@@ -300,10 +300,11 @@ Rules:
 1. amount is SIGNED in the account's currency: money INTO the account is positive, money OUT is negative. A card purchase is negative; a refund is positive.
 2. transaction_type is one of: {", ".join(C.TRANSACTION_TYPES)}.
    - Moving money between two of MY accounts is "transfer" (or "investment_contribution"/"investment_withdrawal" for brokerage/robo-advisor accounts) and MUST set transfer_account_ref. It is never income or expense.
+   - If BOTH sides of such a move appear in this statement (e.g. an SGD→USD conversion), output both rows, each with transfer_account_ref pointing at the other account.
    - Bank interest → "interest"; dividends/coupons → "dividend"; bank/card/FX charges → "fee".
 3. account_ref must be one of my account refs below, or declare a new account in accounts[] (short snake_case slug, never the account number).
 4. category/subcategory: use the slugs below. If unsure use "uncategorised" and set needs_review=true. Never invent categories.
-5. For foreign-currency charges fill original_amount/original_currency (and exchange_rate if shown).
+5. For foreign-currency charges fill original_amount (signed like amount) and original_currency (any ISO code, e.g. JPY, CAD), and exchange_rate if shown.
 6. Set confidence 0–1 per row; set needs_review=true for anything ambiguous.
 7. Put statement-level problems (parse issues, balance mismatch, unclear rows) in warnings[].
 8. Fill accounts[].statement_closing_balance when the statement shows it — it is used to check the import.
@@ -512,7 +513,19 @@ def approve_import(
             ledger.lock_base_amount(txn, idx, base)
             db.add(txn)
             db.flush()
-            if counter is not None:
+            sibling = _sibling_row(db, imp.id, s) if counter is not None else None
+            if sibling is not None:
+                # Both sides of this transfer are rows of the same statement
+                # (e.g. an SGD→USD conversion): each keeps its exact amount and
+                # the two legs are linked, instead of synthesising a leg.
+                txn.transfer_account_id = counter.id
+                sib_txn = db.get(FinanceTransaction, sibling.approved_transaction_id) \
+                    if sibling.approved_transaction_id else None
+                if sib_txn is not None:
+                    group = str(uuid.uuid4())
+                    for leg in (txn, sib_txn):
+                        leg.transfer_group_id = group
+            elif counter is not None:
                 other = ledger.find_matching_leg(
                     db, counter.id, ledger.counter_amount(s.amount, s.currency, counter.currency, idx)[0],
                     counter.currency, s.transaction_date,
@@ -541,6 +554,22 @@ def approve_import(
     db.commit()
     invalidate_summary_cache()
     return {"import_id": import_id, "promoted": promoted, "skipped": skipped, "counts": _counts(db, import_id)}
+
+
+def _sibling_row(db: Session, import_id: int, s: FinanceImportTransaction):
+    """The other side of transfer row `s` inside the same import: a row in the
+    counter-account pointing back at s's account, opposite sign, within ±3
+    days, not ignored."""
+    for row in db.query(FinanceImportTransaction).filter(
+        FinanceImportTransaction.import_id == import_id,
+        FinanceImportTransaction.id != s.id,
+        FinanceImportTransaction.account_ref == s.transfer_account_ref,
+        FinanceImportTransaction.transfer_account_ref == s.account_ref,
+        FinanceImportTransaction.status != "ignored",
+    ).order_by(FinanceImportTransaction.line_index).all():
+        if row.amount * s.amount < 0 and abs((row.transaction_date - s.transaction_date).days) <= 3:
+            return row
+    return None
 
 
 def _settlement_date(db: Session, leg: FinanceTransaction, statement_date: date) -> date:

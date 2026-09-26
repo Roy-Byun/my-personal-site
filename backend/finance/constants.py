@@ -6,7 +6,11 @@ import JSON Schema (import.schema.json). Change values here first.
 
 IMPORT_SCHEMA_VERSION = "1.1"
 
-CURRENCIES = ("SGD", "USD", "KRW", "EUR", "GBP")
+# Account / transaction currencies (FX-converted to the base currency).
+CURRENCIES = ("SGD", "USD", "KRW", "JPY", "EUR", "GBP")
+# A purchase's ORIGINAL currency may be any ISO 4217 code (e.g. a CAD app
+# purchase on an SGD card) — it is informational; the account amount rules.
+ISO_CURRENCY_PATTERN = "^[A-Z]{3}$"
 
 # ── Accounts ─────────────────────────────────────────────────────────────────
 ACCOUNT_TYPES = ("cash", "savings", "investment", "liability", "other_asset")

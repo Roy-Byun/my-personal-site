@@ -31,7 +31,7 @@ const Field = ({ label, children }) => (
   </div>
 );
 
-const CURRENCIES = ["SGD", "USD", "KRW", "EUR", "GBP"];
+const CURRENCIES = ["SGD", "USD", "KRW", "JPY", "EUR", "GBP"];
 
 // ── generic API helpers ──────────────────────────────────────────────────────
 
