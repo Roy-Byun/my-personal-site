@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Wallet, Target, TrendingUp, PiggyBank, AlertTriangle, RefreshCw, Info,
-  ShieldCheck, CalendarClock, Repeat, FileUp, Wallet2, CheckCircle2,
+  ShieldCheck, CalendarClock, Repeat, FileUp, Wallet2, CheckCircle2, Gamepad2,
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend,
@@ -45,6 +45,32 @@ const ChartCard = ({ title, hint, children }) => (
   </div>
 );
 
+// The watched category (e.g. Gaming): how much of this month's allowance is
+// still free for it after the other day-to-day categories keep what they need.
+const FocusLine = ({ f, base }) => {
+  const none = f.can_still_spend_base <= 0;
+  const reserved = f.reserved_for.slice(0, 4).map((r) => `${r.category} ${fmtMoney(r.reserved_base, base)}`).join(", ");
+  return (
+    <div className={`rounded-xl border px-4 py-3 mb-3 ${none ? "bg-rose-50 border-rose-200" : "bg-indigo-50 border-indigo-200"}`}>
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <span className="flex items-center gap-1.5 font-bold text-slate-700"><Gamepad2 className="w-4 h-4 text-indigo-600" /> {f.category}</span>
+        <span className="text-sm text-slate-600">spent <span className="font-semibold">{fmtMoney(f.spent_base, base)}</span> this month</span>
+        <span className={`text-sm ${none ? "text-rose-700" : "text-indigo-800"}`}>
+          {none
+            ? <>nothing left to spend{f.short_by_base > 0 && <> — the plan is already <span className="font-semibold">{fmtMoney(f.short_by_base, base)}</span> short</>}</>
+            : <>you can still spend <span className="text-lg font-extrabold">{fmtMoney(f.can_still_spend_base, base)}</span></>}
+        </span>
+        {f.budget_base != null && <span className="text-xs text-slate-500">(budget {fmtMoney(f.budget_base, base)})</span>}
+      </div>
+      <p className="text-[11px] text-slate-500 mt-1">
+        {f.reserved_for_others_base > 0
+          ? <>After keeping {fmtMoney(f.reserved_for_others_base, base)} for your other budgets still to be spent this month ({reserved}{f.reserved_for.length > 4 ? ", …" : ""}).</>
+          : <>No other budgets are waiting to be spent — set category budgets so they're kept aside first.</>}
+      </p>
+    </div>
+  );
+};
+
 // What's left for day-to-day spending this month once the plan is paid.
 const AllowanceCard = ({ al, base }) => {
   const allowed = al.allowed_variable_base;
@@ -77,6 +103,7 @@ const AllowanceCard = ({ al, base }) => {
       <div className="h-2 rounded-full bg-slate-100 overflow-hidden mb-3">
         <div className={`h-full ${bar}`} style={{ width: `${Math.max(0, pct)}%` }} />
       </div>
+      {al.focus && <FocusLine f={al.focus} base={base} />}
       <p className="text-[11px] text-slate-500">
         {fmtMoney(al.income_base, base)} income − {fmtMoney(al.tax_reserve_base, base)} tax reserve
         − {fmtMoney(al.planned_investments_base, base)} planned investing − {fmtMoney(al.recurring_base, base)} recurring

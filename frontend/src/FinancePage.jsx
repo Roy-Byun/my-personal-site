@@ -772,9 +772,15 @@ const RecurringTab = ({ accounts, categories, reloadAll }) => {
     const now = new Date();
     const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     const day = Math.min(r.day_of_month, dim);
-    const d = new Date(now.getFullYear(), now.getMonth(), day);
-    if (d < new Date(now.getFullYear(), now.getMonth(), now.getDate())) d.setMonth(d.getMonth() + 1);
-    return d.toISOString().slice(0, 10);
+    let y = now.getFullYear(), m = now.getMonth(), dd = day;
+    if (day < now.getDate()) {
+      // Next month, clamped to its length (e.g. day 31 → 30 Nov).
+      m += 1;
+      if (m === 12) { m = 0; y += 1; }
+      dd = Math.min(r.day_of_month, new Date(y, m + 1, 0).getDate());
+    }
+    // Format in local time — toISOString() would shift to UTC and show the day before.
+    return `${y}-${String(m + 1).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
   };
 
   return (
@@ -1328,6 +1334,7 @@ const BudgetGoalsTab = ({ categories, reloadCategories, reloadAll }) => {
         personal_allowance_max: num(profile.personal_allowance_max),
         emergency_fund_opening: num(profile.emergency_fund_opening),
         alert_email: profile.alert_email || null,
+        focus_category_id: profile.focus_category_id ? Number(profile.focus_category_id) : null,
       }) });
       setMsg("Saved."); loadBudgets();
     } catch (e2) { setErr(e2.message); }
@@ -1367,6 +1374,12 @@ const BudgetGoalsTab = ({ categories, reloadCategories, reloadAll }) => {
           <Field label="Allowance min"><input type="number" step="0.01" value={profile.personal_allowance_min ?? ""} onChange={(e) => p("personal_allowance_min", e.target.value)} className={inputCls} /></Field>
           <Field label="Allowance max"><input type="number" step="0.01" value={profile.personal_allowance_max ?? ""} onChange={(e) => p("personal_allowance_max", e.target.value)} className={inputCls} /></Field>
           <Field label="Emergency fund opening"><input type="number" step="0.01" value={profile.emergency_fund_opening ?? ""} onChange={(e) => p("emergency_fund_opening", e.target.value)} className={inputCls} /></Field>
+          <Field label="Watch category (allowed-spending card)">
+            <select value={profile.focus_category_id ?? ""} onChange={(e) => p("focus_category_id", e.target.value)} className={inputCls}>
+              <option value="">— none —</option>
+              {topCategories(categories).filter((c) => !["income", "transfer", "investment", "tax"].includes(c.kind)).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
           <Field label="Month-end alert email"><input type="email" value={profile.alert_email ?? ""} onChange={(e) => p("alert_email", e.target.value)} placeholder="you@example.com" className={inputCls} /></Field>
         </div>
         <p className="text-[11px] text-slate-400">

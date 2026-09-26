@@ -144,6 +144,7 @@ def _run_migrations() -> None:
         # Finance Tracker refinement (emergency fund)
         ("finance_profile",      "emergency_fund_opening", "FLOAT"),
         ("finance_profile",      "alert_email",            "VARCHAR"),
+        ("finance_profile",      "focus_category_id",      "INTEGER"),
     ]
     for table, col, col_type in migrations:
         try:

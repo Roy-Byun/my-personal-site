@@ -70,6 +70,7 @@ class ProfileOut(BaseModel):
     personal_allowance_max: Optional[float]
     emergency_fund_opening: Optional[float]
     alert_email: Optional[str]
+    focus_category_id: Optional[int] = None
     updated_at: datetime
     model_config = {"from_attributes": True}
 
@@ -85,6 +86,7 @@ class ProfileUpdate(BaseModel):
     personal_allowance_max: Optional[float] = None
     emergency_fund_opening: Optional[float] = None
     alert_email: Optional[str] = None
+    focus_category_id: Optional[int] = None
 
 
 class GoalOut(BaseModel):
@@ -1446,6 +1448,67 @@ def _category_flows(idx: FxIndex, cidx: CategoryIndex, month_txns, base_ccy):
     return spent, income
 
 
+def _focus_block(profile, cats, cidx: CategoryIndex, m_txns, rec_items, idx: FxIndex, base_ccy: str,
+                 left_variable: float):
+    """How much of this month's allowance is still free for the watched
+    category (e.g. Gaming).
+
+    Each OTHER day-to-day category keeps back what it still needs: its
+    budget minus what its recurring items already cover, or what it has
+    actually spent if that's more. Whatever remains of the allowance goes to
+    the watched category.
+    """
+    focus = cidx.by_id.get(profile.focus_category_id)
+    if focus is None or focus.parent_id is not None:
+        return None
+    # Non-recurring spend this month per top-level category (recurring costs are
+    # already taken out of the allowance).
+    spent: dict = defaultdict(float)
+    for t in m_txns:
+        if t.recurring_id is not None:
+            continue
+        if t.transaction_type in C.SPEND_TYPES or t.transaction_type == "refund":
+            top = cidx.top(t.category_id)
+            if top is not None and top.kind == "tax":
+                continue
+            spent[top.id if top else None] -= ledger.base_value(t, idx, base_ccy)
+    recurring_by_cat: dict = defaultdict(float)
+    for it in rec_items:
+        if it.type == "expense":
+            top = cidx.top(it.category_id)
+            if top is not None:
+                recurring_by_cat[top.id] += idx.to_base(it.amount, it.currency, base_ccy) or 0.0
+    reserved, reserved_rows = 0.0, []
+    for c in cats:
+        if c.parent_id is not None or c.id == focus.id or not c.is_active \
+                or c.kind in ("income", "transfer", "investment", "tax"):
+            continue
+        budget = idx.to_base(c.monthly_budget, c.budget_currency or base_ccy, base_ccy) if c.monthly_budget else 0.0
+        budget = budget or 0.0
+        # Budget still needed beyond what's been spent (never below 0), with
+        # the part recurring items pay taken out.
+        need_total = max(0.0, budget - recurring_by_cat.get(c.id, 0.0))
+        used = max(0.0, spent.get(c.id, 0.0))
+        still_needed = max(0.0, need_total - used)
+        if still_needed > 0:
+            reserved += still_needed
+            reserved_rows.append({"category": c.name, "reserved_base": round(still_needed, 2)})
+    focus_spent = max(0.0, spent.get(focus.id, 0.0))
+    can_spend = left_variable - reserved
+    focus_budget = (idx.to_base(focus.monthly_budget, focus.budget_currency or base_ccy, base_ccy)
+                    if focus.monthly_budget else None)
+    return {
+        "category_id": focus.id,
+        "category": focus.name,
+        "spent_base": round(focus_spent, 2),
+        "reserved_for_others_base": round(reserved, 2),
+        "reserved_for": sorted(reserved_rows, key=lambda r: -r["reserved_base"]),
+        "can_still_spend_base": round(max(0.0, can_spend), 2),
+        "short_by_base": round(max(0.0, -can_spend), 2),
+        "budget_base": round(focus_budget, 2) if focus_budget is not None else None,
+    }
+
+
 def _budgets_from_spend(idx: FxIndex, cats, spent_by_cat, base_ccy):
     rows = []
     for c in cats:
@@ -1818,6 +1881,7 @@ def summary(
         "days_left": days_left,
         "safe_daily_base": round(max(0.0, left_variable) / days_left, 2) if days_left else 0.0,
         "category_budgets_total_base": round(budgets_total, 2),
+        "focus": _focus_block(profile, cats, cidx, m_txns, rec_items, idx, base_ccy, left_variable),
     }
 
     emergency_fund = {
