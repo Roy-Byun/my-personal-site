@@ -174,7 +174,7 @@
             ]
           },
           "original_currency": {
-            "$ref": "#/$defs/currencyOrNull"
+            "$ref": "#/$defs/isoCurrencyOrNull"
           },
           "exchange_rate": {
             "type": [
@@ -265,6 +265,7 @@
         "SGD",
         "USD",
         "KRW",
+        "JPY",
         "EUR",
         "GBP"
       ]
@@ -274,6 +275,7 @@
         "SGD",
         "USD",
         "KRW",
+        "JPY",
         "EUR",
         "GBP",
         null
@@ -312,6 +314,13 @@
         "statement_parse_issue",
         "account_balance_mismatch"
       ]
+    },
+    "isoCurrencyOrNull": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[A-Z]{3}$"
     }
   }
 }

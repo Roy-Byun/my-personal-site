@@ -77,6 +77,9 @@ def test_schema_enums_match_constants():
     assert d["transactionType"]["enum"] == list(C.TRANSACTION_TYPES)
     assert d["accountType"]["enum"] == list(C.ACCOUNT_TYPES)
     assert d["currency"]["enum"] == list(C.CURRENCIES)
+    assert d["isoCurrencyOrNull"]["pattern"] == C.ISO_CURRENCY_PATTERN
+    assert IMPORT_SCHEMA["properties"]["transactions"]["items"]["properties"]["original_currency"] == \
+        {"$ref": "#/$defs/isoCurrencyOrNull"}
     assert d["warningType"]["enum"] == list(C.WARNING_TYPES)
     assert IMPORT_SCHEMA["properties"]["schema_version"]["const"] == C.IMPORT_SCHEMA_VERSION
 
@@ -384,3 +387,55 @@ def test_baseline_allowed_with_kept_goal(client):
     assert r.status_code == 200, r.text
     assert [g["label"] for g in client.get("/finance/goals").json()] == ["Kept"]
     assert client.post("/finance/baseline").status_code == 409
+
+
+def test_settled_pending_contribution_counts_after_valuation(client):
+    """Baseline pattern: a pending contribution and a valuation on the same day;
+    the bank statement dates the transfer a day earlier. Settling it must not
+    hide it behind the valuation (which excluded it) — the gain stays the
+    platform's."""
+    _acct(client, name="DBS", external_ref="dbs")
+    _acct(client, name="Robo", external_ref="robo", account_type="investment", opening_balance=950)
+    client.post("/finance/valuations", json={"account_id": 2, "as_of": "2026-08-31", "market_value": 1000})
+    client.post("/finance/transactions", json={
+        "account_id": 2, "transaction_date": "2026-08-31", "transaction_type": "investment_contribution",
+        "amount": 500, "status": "pending"})
+    p = copy.deepcopy(PAYLOAD)
+    p["transactions"] = [dict(PAYLOAD["transactions"][2], transaction_date="2026-08-30", amount=-500)]
+    p["accounts"], p["warnings"] = [], []
+    iid = client.post("/finance/imports", content=json.dumps(p)).json()["id"]
+    client.post(f"/finance/imports/{iid}/approve", json={})
+    robo_leg = next(t for t in client.get("/finance/transactions").json() if t["account_id"] == 2)
+    assert robo_leg["status"] == "settled" and robo_leg["transaction_date"] == "2026-09-01"
+    finance.invalidate_summary_cache()
+    robo = next(a for a in client.get("/finance/summary").json()["accounts"] if a["name"] == "Robo")
+    assert robo["settled"] == 1500 and robo["investment_gain"] == 50
+
+
+def test_both_sides_of_fx_transfer_in_one_import_are_linked(client):
+    _acct(client, name="DBS SGD", external_ref="dbs")
+    _acct(client, name="DBS USD", external_ref="dbs_usd", currency="USD")
+    p = copy.deepcopy(PAYLOAD)
+    p["accounts"], p["warnings"] = [], []
+    p["transactions"] = [
+        {"account_ref": "dbs", "transaction_date": "2026-07-01", "description_raw": "FT260701 SGD leg",
+         "transaction_type": "transfer", "amount": -6529.93, "currency": "SGD", "category": "transfer",
+         "transfer_account_ref": "dbs_usd", "confidence": 0.9},
+        {"account_ref": "dbs_usd", "transaction_date": "2026-07-01", "description_raw": "FT260701 USD leg",
+         "transaction_type": "transfer", "amount": 5000, "currency": "USD", "category": "transfer",
+         "transfer_account_ref": "dbs", "confidence": 0.9},
+        {"account_ref": "dbs", "transaction_date": "2026-07-03", "description_raw": "UNIQLO TOKYO",
+         "transaction_type": "expense", "amount": -41.75, "currency": "SGD", "original_amount": -4990,
+         "original_currency": "JPY", "category": "shopping", "subcategory": "clothing", "confidence": 0.9},
+    ]
+    iid = client.post("/finance/imports", content=json.dumps(p)).json()["id"]
+    assert client.post(f"/finance/imports/{iid}/approve", json={}).json()["promoted"] == 3
+    txns = client.get("/finance/transactions").json()
+    assert len(txns) == 3                                  # no synthesised legs
+    legs = [t for t in txns if t["transaction_type"] == "transfer"]
+    assert legs[0]["transfer_group_id"] and legs[0]["transfer_group_id"] == legs[1]["transfer_group_id"]
+    assert sorted((t["currency"], t["amount"]) for t in legs) == [("SGD", -6529.93), ("USD", 5000)]
+    jp = next(t for t in txns if t["original_currency"] == "JPY")
+    assert jp["original_amount"] == -4990
+    bal = _balances(client)
+    assert bal["dbs"] == -6529.93 - 41.75 and bal["dbs_usd"] == 5000
