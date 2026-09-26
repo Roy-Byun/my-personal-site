@@ -546,3 +546,30 @@ def test_budget_suggestions_skip_sparse_month(client):
     stray = next(x for x in r["months"] if x["month"] == f"{ds[-1]:%Y-%m}")
     assert stray["sparse"] and not stray["selected"]
     assert r["suggestions"][0]["average_base"] == 200.0
+
+
+def test_focus_category_can_still_spend(client):
+    """Gaming room = allowance left − what other budgets still need (minus the
+    part recurring items pay)."""
+    _acct(client, name="DBS", external_ref="dbs")
+    gaming, food = _cat_id(client, "Gaming"), _cat_id(client, "Food")
+    family, subs = _cat_id(client, "Family"), _cat_id(client, "Subscriptions")
+    client.put("/finance/profile", json={"monthly_income": 2000, "income_currency": "SGD", "tax_reserve": 0,
+                                         "focus_category_id": gaming})
+    for cid, b in ((food, 150), (family, 300), (subs, 50)):
+        client.put(f"/finance/categories/{cid}", json={"monthly_budget": b, "budget_currency": "SGD"})
+    client.post("/finance/recurring", json={"label": "Parents", "amount": 300, "day_of_month": 28,
+                                            "account_id": 1, "category_id": family})
+    client.post("/finance/recurring", json={"label": "Spotify", "amount": 12, "day_of_month": 28,
+                                            "account_id": 1, "category_id": subs})
+    for cid, amt in ((food, -50), (gaming, -200)):
+        client.post("/finance/transactions", json={"account_id": 1, "transaction_date": str(THIS_MONTH),
+                                                   "transaction_type": "expense", "amount": amt, "category_id": cid})
+    a = client.get("/finance/summary").json()["allowance"]
+    f = a["focus"]
+    # allowed = 2000 − 0 − 0 − 312 recurring = 1688; spent 250 → 1438 left.
+    assert a["left_base"] == 1438
+    # Food still needs 100; Family 0 (recurring covers it); Subscriptions 50 − 12 = 38.
+    assert f["reserved_for_others_base"] == 138
+    assert f["spent_base"] == 200 and f["can_still_spend_base"] == 1300
+    assert f["category"] == "Gaming"

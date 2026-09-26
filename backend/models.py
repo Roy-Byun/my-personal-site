@@ -305,6 +305,9 @@ class FinanceProfile(Base):
     # Emergency Fund + month-end reminder
     emergency_fund_opening = Column(Float, nullable=True)              # starting balance before month closes
     alert_email = Column(String, nullable=True)                       # month-end reminder recipient
+    # Category to watch on the "Allowed spending" card (e.g. Gaming): how much
+    # of this month's allowance is still free for it.
+    focus_category_id = Column(Integer, nullable=True)
 
     updated_at = Column(DateTime, default=datetime.utcnow)
 
