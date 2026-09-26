@@ -592,3 +592,42 @@ def test_summary_rows_carry_category_ids_for_drilldown(client):
     # Drill-down queries: a parent includes its subcategories; uncategorised has its own filter.
     assert [t["amount"] for t in client.get(f"/finance/transactions?category_id={food}&month={month}").json()] == [-40]
     assert [t["amount"] for t in client.get(f"/finance/transactions?uncategorised=true&month={month}").json()] == [-9]
+
+
+def test_sg_tax_resident_bands():
+    from finance import sg_tax
+    r = sg_tax.estimate(annual_employment_income=54_000)
+    assert r["chargeable_income"] == 53_000 and r["tax"] == 1_460
+    assert [b["tax"] for b in r["bands"]] == [0, 200, 350, 910]
+    # Higher band and relief cap
+    assert sg_tax.resident_tax(100_000)["tax"] == 550 + 2_800 + 2_300
+    r = sg_tax.estimate(annual_employment_income=200_000, other_reliefs=100_000)
+    assert r["total_reliefs"] == 80_000 and r["chargeable_income"] == 120_000
+    # Rebate: known YA2025 60% capped at 200
+    assert sg_tax.estimate(annual_employment_income=54_000, year_of_assessment=2025)["tax"] == 1_260
+
+
+def test_sg_tax_non_resident():
+    from finance import sg_tax
+    r = sg_tax.estimate(annual_employment_income=54_000, resident=False)
+    assert r["method"] == "non_resident_flat" and r["tax"] == 8_100 and r["total_reliefs"] == 0
+
+
+def test_tax_estimate_endpoint_uses_profile_and_ledger(client):
+    client.put("/finance/profile", json={"monthly_income": 4500, "income_currency": "SGD", "tax_reserve": 150})
+    _acct(client, name="DBS")
+    salary = _cat_id(client, "Salary", parent="Income")
+    reimb = _cat_id(client, "Reimbursement", parent="Income")
+    y = TODAY.year
+    for cat, amt in ((salary, 4500), (salary, 4500), (reimb, 200)):
+        client.post("/finance/transactions", json={
+            "account_id": 1, "transaction_date": f"{y}-01-25", "transaction_type": "income",
+            "amount": amt, "category_id": cat})
+    r = client.post("/finance/tax/estimate", json={"year": y, "rebate_pct": 0}).json()
+    assert r["gross_income"] == 54_000 and r["tax"] == 1_460
+    assert r["monthly_set_aside"] == round(1_460 / 12, 2) and r["year_of_assessment"] == y + 1
+    assert r["recorded"] == {"total_sgd": 9_000, "months": [1]}
+    r = client.post("/finance/tax/estimate", json={"year": y, "monthly_salary": 5000, "months_employed": 6,
+                                                   "bonus": 5000, "rebate_pct": 0}).json()
+    assert r["gross_income"] == 35_000 and r["tax"] == 200 + 4_000 * 0.035  # chargeable 34,000
+    assert r["monthly_set_aside"] == round(r["tax"] / 6, 2)
