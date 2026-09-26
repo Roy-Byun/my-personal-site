@@ -82,11 +82,18 @@ function PageBanner({ currentPage }) {
   const { t } = useT();
   if (currentPage === "home") {
     return (
-      <header className="w-full py-20 px-6 bg-slate-800 text-left text-white">
-        <div className="max-w-7xl mx-auto">
-          <h1 className="text-4xl md:text-5xl font-extrabold italic mb-4">{t("My corner of the internet.")}</h1>
-          <p className="text-slate-300 text-lg max-w-2xl">{t("Everything about me: projects, ideas and more.")}</p>
-        </div>
+      <header className="w-full bg-slate-900">
+        {/* The banner artwork carries its own caption; the heading is kept for screen readers. */}
+        <h1 className="sr-only">{t("My corner of the internet.")} {t("A home for my projects, ideas and everything in between.")}</h1>
+        <img
+          src="/banner.webp"
+          srcSet="/banner-900.webp 900w, /banner.webp 1774w"
+          sizes="100vw"
+          width="1774" height="887"
+          alt=""
+          className="block w-full h-auto max-h-[560px] object-cover"
+          fetchPriority="high"
+        />
       </header>
     );
   }

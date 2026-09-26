@@ -3,7 +3,7 @@ import { createContext, useContext, useState } from "react";
 const KO = {
   // Home banner
   "My corner of the internet.": "나만의 인터넷 공간.",
-  "Everything about me: projects, ideas and more.": "나에 대한 모든 것: 프로젝트, 아이디어, 그리고 그 이상.",
+  "A home for my projects, ideas and everything in between.": "나의 프로젝트와 아이디어, 그리고 그 사이의 모든 것을 위한 공간.",
 
   // Nav
   "Home": "홈",
