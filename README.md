@@ -60,6 +60,18 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
 The backend exposes health endpoints (see `backend/routers/health.py`).
 
+- Backend tests (finance ledger + statement import):
+
+```bash
+cd backend
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
+
+**Finance Tracker**
+
+Admin-only personal finance at `/finance`: a signed ledger with two-leg transfers, budgets, recurring costs, Emergency Fund, investments and AI statement import with a review queue. See [docs/finance/](docs/finance) for the design decisions, the import JSON contract (v1.1) and the schema.
+
 **Common Environment Variables**
 
 - `DATABASE_URL` — connection string for Postgres (used by the backend). If not set, a local SQLite fallback is used.

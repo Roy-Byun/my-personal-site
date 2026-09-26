@@ -1,0 +1,317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roika-server/finance/import.schema.json",
+  "title": "Finance Statement Import Payload v1.1",
+  "description": "Server-side gate for AI-produced statement JSON. Rejects unknown fields and wrong types before business rules run. Generated from backend/finance/constants.py \u2014 keep in sync (tests/test_finance.py checks).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "statement",
+    "accounts",
+    "transactions",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "institution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statement_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statement_period_start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "statement_period_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "source_currency": {
+          "$ref": "#/$defs/currencyOrNull"
+        },
+        "import_notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "accounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "external_account_ref",
+          "account_name",
+          "account_type",
+          "currency"
+        ],
+        "properties": {
+          "external_account_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "institution": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "account_type": {
+            "$ref": "#/$defs/accountType"
+          },
+          "currency": {
+            "$ref": "#/$defs/currency"
+          },
+          "masked_identifier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 40
+          },
+          "statement_closing_balance": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "statement_closing_balance_base": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "transactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "account_ref",
+          "transaction_date",
+          "description_raw",
+          "transaction_type",
+          "amount",
+          "currency"
+        ],
+        "properties": {
+          "external_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "transaction_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "posting_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "description_raw": {
+            "type": "string"
+          },
+          "merchant_normalized": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 160
+          },
+          "transaction_type": {
+            "$ref": "#/$defs/transactionType"
+          },
+          "amount": {
+            "type": "number"
+          },
+          "currency": {
+            "$ref": "#/$defs/currency"
+          },
+          "original_amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "original_currency": {
+            "$ref": "#/$defs/currencyOrNull"
+          },
+          "exchange_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "exclusiveMinimum": 0
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 80
+          },
+          "subcategory": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 80
+          },
+          "transfer_account_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 80
+          },
+          "is_recurring": {
+            "type": "boolean"
+          },
+          "is_fixed_expense": {
+            "type": "boolean"
+          },
+          "needs_review": {
+            "type": "boolean"
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/$defs/warningType"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transaction_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "currency": {
+      "enum": [
+        "SGD",
+        "USD",
+        "KRW",
+        "EUR",
+        "GBP"
+      ]
+    },
+    "currencyOrNull": {
+      "enum": [
+        "SGD",
+        "USD",
+        "KRW",
+        "EUR",
+        "GBP",
+        null
+      ]
+    },
+    "accountType": {
+      "enum": [
+        "cash",
+        "savings",
+        "investment",
+        "liability",
+        "other_asset"
+      ]
+    },
+    "transactionType": {
+      "enum": [
+        "income",
+        "expense",
+        "transfer",
+        "investment_contribution",
+        "investment_withdrawal",
+        "interest",
+        "dividend",
+        "refund",
+        "fee",
+        "adjustment"
+      ]
+    },
+    "warningType": {
+      "enum": [
+        "uncertain_category",
+        "uncertain_transfer",
+        "possible_duplicate",
+        "missing_currency",
+        "unclear_amount",
+        "statement_parse_issue",
+        "account_balance_mismatch"
+      ]
+    }
+  }
+}
