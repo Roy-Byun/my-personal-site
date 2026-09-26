@@ -1,0 +1,155 @@
+name: Mini PC cleanup
+
+# Removes what the disk report showed as unused. Always run "dry-run" first:
+# it prints exactly what would be removed and changes nothing.
+#
+# "delete" does, in order:
+#   1. Backs up every ai-aoi-stack Docker volume to ~/backups/<date>/ (tar.gz)
+#   2. Removes the ai-aoi-stack containers and volumes (docling, neo4j,
+#      postgres 16, its n8n). Other n8n instances are never touched.
+#   3. Optionally removes Portainer and its volume
+#   4. Removes Docker images no container uses, unused anonymous volumes and
+#      build cache older than 3 days
+#   5. Removes old GitHub runner versions and installer tarballs in $HOME
+# Things that need sudo (packages, journal, /opt) are listed at the end for
+# you to run over SSH.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run (show only) or delete"
+        type: choice
+        options: [dry-run, delete]
+        default: dry-run
+      remove_portainer:
+        description: "Also remove Portainer (Docker admin web UI on port 9000)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: mini-pc-maintenance
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    env:
+      MODE: ${{ inputs.mode }}
+      REMOVE_PORTAINER: ${{ inputs.remove_portainer }}
+      STACK: ai-aoi-stack
+    steps:
+      - name: Plan and clean up
+        shell: bash
+        run: |
+          set -uo pipefail
+          run() { if [ "$MODE" = delete ]; then echo "+ $*"; "$@"; else echo "[dry-run] $*"; fi; }
+          echo "Mode: $MODE   remove Portainer: $REMOVE_PORTAINER"
+          df -h / | tail -1 | awk '{print "Disk before: "$3" used, "$4" free ("$5")"}'
+
+          echo "::group::Containers by compose project"
+          docker ps -a --format '{{.Names}}\t{{.Label "com.docker.compose.project"}}\t{{.Image}}\t{{.Ports}}' \
+            | awk -F'\t' '{printf "%-28s %-20s %-50s %s\n", $1, ($2==""?"(none)":$2), $3, $4}'
+          echo "::endgroup::"
+
+          # ── 1–2. ai-aoi-stack ───────────────────────────────────────────
+          mapfile -t CONTAINERS < <(docker ps -a -q --filter "label=com.docker.compose.project=$STACK")
+          mapfile -t VOLUMES < <(docker volume ls -q --filter "label=com.docker.compose.project=$STACK")
+          echo "== $STACK: ${#CONTAINERS[@]} containers, ${#VOLUMES[@]} volumes"
+          for c in "${CONTAINERS[@]}"; do docker inspect -f '   container {{.Name}} ({{.Config.Image}})' "$c"; done
+          for v in "${VOLUMES[@]}"; do echo "   volume $v"; done
+
+          if [ "${#VOLUMES[@]}" -gt 0 ]; then
+            BK="$HOME/backups/$(date +%Y-%m-%d)-$STACK"
+            run mkdir -p "$BK"
+            for v in "${VOLUMES[@]}"; do
+              run docker run --rm -v "$v":/data:ro -v "$BK":/backup alpine \
+                tar czf "/backup/$v.tar.gz" -C /data .
+            done
+            [ "$MODE" = delete ] && { ls -lh "$BK"; echo "Backups kept in $BK — delete them yourself once you're sure."; }
+          fi
+          # Stop everything first, then remove, so dependants don't restart.
+          [ "${#CONTAINERS[@]}" -gt 0 ] && run docker stop "${CONTAINERS[@]}"
+          [ "${#CONTAINERS[@]}" -gt 0 ] && run docker rm "${CONTAINERS[@]}"
+          [ "${#VOLUMES[@]}" -gt 0 ] && run docker volume rm "${VOLUMES[@]}"
+          # personal_network is shared with this site and n8n_main: never remove it.
+          for n in $(docker network ls --format '{{.Name}}' --filter "label=com.docker.compose.project=$STACK"); do
+            [ "$n" = personal_network ] && { echo "   keeping network personal_network"; continue; }
+            run docker network rm "$n"
+          done
+
+          # ── 3. Portainer ────────────────────────────────────────────────
+          if [ "$REMOVE_PORTAINER" = true ]; then
+            if docker inspect portainer >/dev/null 2>&1; then
+              run docker rm -f portainer
+              docker volume inspect portainer_data >/dev/null 2>&1 && run docker volume rm portainer_data
+            else
+              echo "Portainer container not found."
+            fi
+          else
+            echo "== Portainer kept."
+          fi
+
+          # ── 4. Docker leftovers ─────────────────────────────────────────
+          echo "== Images no container will use after this:"
+          if [ "$MODE" = delete ]; then
+            docker image prune -a -f | tail -1
+            docker volume prune -f | tail -1
+            docker builder prune -a -f --filter until=72h | tail -1
+          else
+            # Image IDs still used by containers that stay.
+            REMOVE=" ${CONTAINERS[*]} "
+            [ "$REMOVE_PORTAINER" = true ] && REMOVE+=" $(docker ps -aq -f name='^portainer$') "
+            KEEP_IMAGES=$(for c in $(docker ps -aq); do
+              [[ "$REMOVE" == *" $c "* ]] || docker inspect -f '{{.Image}}' "$c"; done | sort -u)
+            docker images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}} {{.Size}}' | while read -r id img size; do
+              grep -qxF "$id" <<<"$KEEP_IMAGES" || echo "   $img ($size)"
+            done
+            echo "[dry-run] docker volume prune -f   (anonymous volumes not used by any container)"
+            echo "[dry-run] docker builder prune -a -f --filter until=72h   (build cache: $(docker system df --format '{{if eq .Type "Build Cache"}}{{.Size}}{{end}}' | tr -d '\n'))"
+          fi
+
+          # ── 5. Old runner versions ──────────────────────────────────────
+          echo "== GitHub runner leftovers in $HOME"
+          for root in "$HOME"/actions-runner*; do
+            [ -L "$root/bin" ] || continue
+            cur=$(readlink "$root/bin"); cur=${cur##*bin.}
+            for d in "$root"/bin.* "$root"/externals.*; do
+              v=${d##*/}; v=${v#bin.}; v=${v#externals.}
+              [ -d "$d" ] && [ "$v" != "$cur" ] && run rm -rf "$d"
+            done
+            for f in "$root"/actions-runner-linux-*.tar.gz; do [ -f "$f" ] && run rm -f "$f"; done
+            [ -d "$root/_work/_update" ] && run rm -rf "$root/_work/_update"
+            echo "   $root keeps version $cur"
+          done
+
+          df -h / | tail -1 | awk '{print "Disk after: "$3" used, "$4" free ("$5")"}'
+          docker system df
+
+      - name: Commands that need sudo (run these yourself over SSH)
+        shell: bash
+        run: |
+          cat <<'EOF'
+          # 1. ai-aoi-stack runner and folder. First check which runner service lives in /opt:
+          grep -H WorkingDirectory /etc/systemd/system/actions.runner.*.service
+          #    If the n8n-research-agent runner points at /opt/ai-aoi-stack/actions-runner:
+          cd /opt/ai-aoi-stack/actions-runner && sudo ./svc.sh stop && sudo ./svc.sh uninstall
+          #    then remove the runner on GitHub: repo Settings → Actions → Runners → remove
+          sudo rm -rf /opt/ai-aoi-stack
+
+          # 2. Remote desktop (xrdp) — Tailscale SSH replaces it
+          sudo apt purge -y xrdp
+
+          # 3. Services a mini PC doesn't need
+          sudo apt purge -y snapd modemmanager multipath-tools open-iscsi open-vm-tools cloud-init
+          sudo apt autoremove --purge -y
+
+          # 4. Old kernel leftovers, logs and package cache
+          sudo apt purge -y $(dpkg -l | awk '/^rc/{print $2}')
+          sudo journalctl --vacuum-size=200M
+          sudo apt clean
+
+          # 5. Updates, then restart to load the new kernel
+          sudo apt update && sudo apt full-upgrade -y && sudo reboot
+          EOF
