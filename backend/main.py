@@ -102,6 +102,7 @@ def startup() -> None:
     Base.metadata.create_all(bind=engine)
     _run_migrations()
     _seed_admin()
+    _seed_finance_categories()
 
     _scheduler.add_job(_news_fetch_job,   "interval", minutes=30, id="news_fetch",   replace_existing=True)
     _scheduler.add_job(_news_cleanup_job, "interval", hours=24,   id="news_cleanup", replace_existing=True)
@@ -178,6 +179,20 @@ def _reset_legacy_finance() -> None:
                 conn.execute(text(f"DROP TABLE {table}"))
                 dropped.append(table)
     logging.getLogger(__name__).warning("finance: dropped legacy ledger tables %s", dropped)
+
+
+def _seed_finance_categories() -> None:
+    """Give a fresh (or just-reset) tracker the standard category tree, so
+    imports and the AI prompt have categories to match against."""
+    from finance.ledger import seed_default_categories
+    from models import FinanceCategory
+
+    db = SessionLocal()
+    try:
+        if not db.query(FinanceCategory).count():
+            seed_default_categories(db)
+    finally:
+        db.close()
 
 
 def _seed_admin() -> None:
