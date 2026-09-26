@@ -352,6 +352,86 @@ def update_profile(
     return profile
 
 
+# ── Income tax (Singapore) ───────────────────────────────────────────────────
+
+class TaxEstimateIn(BaseModel):
+    year: Optional[int] = None                 # income year; YA = year + 1
+    monthly_salary: Optional[float] = None     # SGD; defaults to the profile income
+    months_employed: int = Field(default=12, ge=1, le=12)
+    bonus: float = 0.0
+    other_employment_income: float = 0.0
+    resident: bool = True
+    age_band: str = "under_55"
+    cpf_relief: float = 0.0
+    other_reliefs: float = 0.0
+    donations: float = 0.0
+    rebate_pct: Optional[float] = None         # e.g. 0.6; None → known rebate for that YA
+    rebate_cap: Optional[float] = None
+
+
+def _recorded_employment_income(db: Session, year: int) -> dict:
+    """Salary and bonus rows recorded in the ledger for a calendar year, in SGD
+    (reimbursements and investment income are not employment income)."""
+    cats = db.query(FinanceCategory).all()
+    cidx = CategoryIndex(cats)
+    idx = FxIndex(db)
+    wanted = {"salary", "bonus"}
+    rows = db.query(FinanceTransaction).filter(
+        FinanceTransaction.transaction_type == "income",
+        FinanceTransaction.transaction_date >= date(year, 1, 1),
+        FinanceTransaction.transaction_date <= date(year, 12, 31),
+    ).all()
+    total, months = 0.0, set()
+    for t in rows:
+        c = cidx.by_id.get(t.category_id)
+        top = cidx.top(t.category_id)
+        if c is None or top is None or C.slugify(top.name) != "income" or C.slugify(c.name) not in wanted:
+            continue
+        v = idx.to_base(float(t.amount), t.currency, "SGD")
+        if v is None:
+            continue
+        total += v
+        months.add(t.transaction_date.month)
+    return {"total_sgd": round(total, 2), "months": sorted(months)}
+
+
+@router.post("/tax/estimate")
+def tax_estimate(
+    body: TaxEstimateIn, _: User = Depends(require_admin), db: Session = Depends(get_db)
+):
+    """Estimate Singapore income tax for one income year, plus the monthly
+    amount to set aside, and what the ledger has recorded as salary so far."""
+    from finance import sg_tax
+
+    profile = _get_or_create_profile(db)
+    year = body.year or date.today().year
+    idx = FxIndex(db)
+    monthly = body.monthly_salary
+    if monthly is None and profile.monthly_income:
+        monthly = idx.to_base(float(profile.monthly_income), profile.income_currency or "SGD", "SGD")
+    monthly = float(monthly or 0.0)
+    annual = monthly * body.months_employed + body.bonus + body.other_employment_income
+    result = sg_tax.estimate(
+        annual_employment_income=annual, resident=body.resident, age_band=body.age_band,
+        cpf_relief=body.cpf_relief, other_reliefs=body.other_reliefs, donations=body.donations,
+        rebate_pct=body.rebate_pct, rebate_cap=body.rebate_cap, year_of_assessment=year + 1,
+    )
+    base_ccy = profile.base_currency or "SGD"
+    monthly_set_aside = result["tax"] / body.months_employed
+    result.update({
+        "year": year,
+        "year_of_assessment": year + 1,
+        "monthly_salary": round(monthly, 2),
+        "months_employed": body.months_employed,
+        "monthly_set_aside": round(monthly_set_aside, 2),
+        "monthly_set_aside_base": round(idx.to_base(monthly_set_aside, "SGD", base_ccy) or 0.0, 2),
+        "base_currency": base_ccy,
+        "current_tax_reserve": profile.tax_reserve,
+        "recorded": _recorded_employment_income(db, year),
+    })
+    return result
+
+
 # ── Goals ────────────────────────────────────────────────────────────────────
 
 def _clear_other_primary_goals(db: Session, keep_id: Optional[int]) -> None:

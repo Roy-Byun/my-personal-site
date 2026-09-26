@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   LayoutDashboard, Landmark, ArrowLeftRight, LineChart as LineChartIcon,
   Target, Settings2, Plus, Pencil, Trash2, X, RefreshCw, DownloadCloud, Repeat,
-  FileUp, AlertTriangle, CheckCircle2, Copy, EyeOff, Sparkles, Info, ChevronRight,
+  FileUp, AlertTriangle, CheckCircle2, Copy, EyeOff, Sparkles, Info, ChevronRight, Calculator,
 } from "lucide-react";
 import { useAuth } from "./AuthContext";
 import FinanceDashboard from "./FinanceDashboard";
@@ -1348,7 +1348,11 @@ const BudgetGoalsTab = ({ categories, reloadCategories, reloadAll }) => {
       {err && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
-        <button type="button" onClick={() => setShowAssumptions((v) => !v)}
+        <button type="button" onClick={() => {
+          // The Tax tab can change tax_reserve; refetch so Save doesn't write back a stale value.
+          if (!showAssumptions) loadCore();
+          setShowAssumptions((v) => !v);
+        }}
           className="w-full flex items-center justify-between px-6 py-4 text-left">
           <div>
             <h2 className="text-lg font-bold text-slate-800">Monthly assumptions</h2>
@@ -1939,6 +1943,169 @@ const ImportTab = ({ accounts, categories, reloadAll }) => {
   );
 };
 
+// ── Tax (Singapore income tax estimate) ──────────────────────────────────────
+
+const pct = (r) => `${Math.round(r * 1000) / 10}%`;
+
+const TaxTab = ({ reloadAll }) => {
+  const thisYear = new Date().getFullYear();
+  const [f, setF] = useState({
+    year: thisYear, monthly_salary: "", months_employed: 12, bonus: "", other_employment_income: "",
+    resident: true, age_band: "under_55", cpf_relief: "", other_reliefs: "", donations: "", rebate_pct: "", rebate_cap: "",
+  });
+  const [r, setR] = useState(null);
+  const [err, setErr] = useState(""); const [msg, setMsg] = useState("");
+  const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      try {
+        const body = {
+          year: Number(f.year) || thisYear, months_employed: Number(f.months_employed) || 12,
+          monthly_salary: num(f.monthly_salary), bonus: num(f.bonus) || 0,
+          other_employment_income: num(f.other_employment_income) || 0, resident: f.resident,
+          age_band: f.age_band, cpf_relief: num(f.cpf_relief) || 0, other_reliefs: num(f.other_reliefs) || 0,
+          donations: num(f.donations) || 0,
+          rebate_pct: f.rebate_pct === "" ? null : Number(f.rebate_pct) / 100,
+          rebate_cap: num(f.rebate_cap),
+        };
+        setR(await api("/tax/estimate", { method: "POST", body: JSON.stringify(body) })); setErr("");
+      } catch (e) { setErr(e.message); }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [f, thisYear]);
+
+  const useAsReserve = async () => {
+    setMsg("");
+    try {
+      await api("/profile", { method: "PUT", body: JSON.stringify({ tax_reserve: r.monthly_set_aside_base }) });
+      setMsg("Saved as your monthly tax reserve."); reloadAll();
+      setR((s) => ({ ...s, current_tax_reserve: s.monthly_set_aside_base }));
+    } catch (e) { setErr(e.message); }
+  };
+
+  const S = (v) => fmtMoney(v, "SGD");
+  const numField = (k, label, placeholder) => (
+    <Field label={label}><input type="number" step="0.01" min="0" value={f[k]} placeholder={placeholder}
+      onChange={(e) => set(k, e.target.value)} className={inputCls} /></Field>
+  );
+  const recorded = r?.recorded;
+  const reserveDiff = r && r.current_tax_reserve != null ? r.current_tax_reserve - r.monthly_set_aside_base : null;
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+      <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-bold text-slate-800">Singapore income tax</h2>
+          <p className="text-xs text-slate-400">Employment income for one calendar year. Resident rates from YA2024.</p>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Income year">
+            <input type="number" value={f.year} onChange={(e) => set("year", e.target.value)} className={inputCls} />
+          </Field>
+          <Field label="Tax residency">
+            <select value={f.resident ? "yes" : "no"} onChange={(e) => set("resident", e.target.value === "yes")} className={inputCls}>
+              <option value="yes">Resident (183+ days)</option><option value="no">Non-resident</option>
+            </select>
+          </Field>
+          {numField("monthly_salary", "Monthly gross salary (SGD)", r ? String(r.monthly_salary) : "from profile")}
+          <Field label="Months employed">
+            <input type="number" min="1" max="12" value={f.months_employed} onChange={(e) => set("months_employed", e.target.value)} className={inputCls} />
+          </Field>
+          {numField("bonus", "Bonus / AWS (SGD)", "0")}
+          {numField("other_employment_income", "Other employment income", "0")}
+          <Field label="Age">
+            <select value={f.age_band} onChange={(e) => set("age_band", e.target.value)} className={inputCls}>
+              <option value="under_55">Under 55</option><option value="55_59">55–59</option><option value="60_plus">60+</option>
+            </select>
+          </Field>
+          {numField("cpf_relief", "CPF contributions", "0 (EP: none)")}
+          {numField("other_reliefs", "Other reliefs", "0")}
+          {numField("donations", "Approved donations", "0")}
+          {numField("rebate_pct", "Rebate % (if announced)", "auto")}
+          {numField("rebate_cap", "Rebate cap (SGD)", "auto")}
+        </div>
+        <p className="text-[11px] text-slate-400">
+          Tax on {f.year || thisYear} income is billed in {(Number(f.year) || thisYear) + 1} (YA {(Number(f.year) || thisYear) + 1}).
+          Employment Pass holders don&apos;t pay CPF, so leave CPF at 0. Estimate only.
+        </p>
+      </div>
+
+      <div className="lg:col-span-3 space-y-4">
+        {err && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
+        {r && (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estimated tax / year</p>
+                <p className="text-2xl font-bold text-slate-800 mt-1">{S(r.tax)}</p>
+                <p className="text-xs text-slate-400">Effective rate {pct(r.effective_rate)}</p>
+              </div>
+              <div className="bg-white rounded-2xl border border-indigo-200 shadow-sm p-5">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Set aside / month</p>
+                <p className="text-2xl font-bold text-indigo-600 mt-1">{S(r.monthly_set_aside)}</p>
+                <p className="text-xs text-slate-400">over {r.months_employed} month{r.months_employed > 1 ? "s" : ""}</p>
+              </div>
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Current tax reserve</p>
+                <p className="text-2xl font-bold text-slate-800 mt-1">{r.current_tax_reserve != null ? fmtMoney(r.current_tax_reserve, r.base_currency) : "—"}</p>
+                {reserveDiff != null && Math.abs(reserveDiff) >= 1 && (
+                  <p className={`text-xs ${reserveDiff > 0 ? "text-amber-600" : "text-red-600"}`}>
+                    {reserveDiff > 0 ? `${fmtMoney(reserveDiff, r.base_currency)} more than needed` : `${fmtMoney(-reserveDiff, r.base_currency)} short`}
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={useAsReserve} disabled={Math.abs(reserveDiff ?? 1) < 0.01}
+                className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-40">
+                Use {fmtMoney(r.monthly_set_aside_base, r.base_currency)} as my monthly tax reserve
+              </button>
+              {msg && <span className="text-sm text-emerald-600">{msg}</span>}
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+              <h3 className="text-sm font-bold text-slate-700 mb-3">How it&apos;s calculated</h3>
+              <table className="w-full text-sm">
+                <tbody className="divide-y divide-slate-100">
+                  <tr><td className="py-1.5 text-slate-600">Employment income ({S(r.monthly_salary)} × {r.months_employed}{r.gross_income > r.monthly_salary * r.months_employed + 0.005 ? " + bonus/other" : ""})</td><td className="text-right">{S(r.gross_income)}</td></tr>
+                  {r.donation_deduction > 0 && <tr><td className="py-1.5 text-slate-600">Donations (250% deduction)</td><td className="text-right">−{S(r.donation_deduction)}</td></tr>}
+                  {r.method === "resident" && <tr><td className="py-1.5 text-slate-600">Reliefs (incl. {S(r.earned_income_relief)} earned income relief)</td><td className="text-right">−{S(r.total_reliefs)}</td></tr>}
+                  <tr className="font-semibold"><td className="py-1.5">Chargeable income</td><td className="text-right">{S(r.chargeable_income)}</td></tr>
+                </tbody>
+              </table>
+              <table className="w-full text-sm mt-4">
+                <thead><tr className="text-[10px] uppercase tracking-widest text-slate-400">
+                  <th className="text-left py-1">Band</th><th className="text-right pl-2">Amount</th><th className="text-right pl-2">Rate</th><th className="text-right pl-2">Tax</th>
+                </tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {r.bands.map((b) => (
+                    <tr key={b.from}>
+                      <td className="py-1.5 text-slate-600">{r.method === "non_resident_flat" ? "Flat on employment income" : `${S(b.from)} – ${b.to != null ? S(b.to) : "…"}`}</td>
+                      <td className="text-right pl-2">{S(b.amount)}</td><td className="text-right pl-2">{pct(b.rate)}</td><td className="text-right pl-2">{S(b.tax)}</td>
+                    </tr>
+                  ))}
+                  {r.rebate > 0 && <tr><td className="py-1.5 text-slate-600" colSpan={3}>Tax rebate (YA {r.year_of_assessment})</td><td className="text-right">−{S(r.rebate)}</td></tr>}
+                  <tr className="font-bold"><td className="py-1.5" colSpan={3}>Estimated tax</td><td className="text-right">{S(r.tax)}</td></tr>
+                </tbody>
+              </table>
+              {r.notes.map((n) => <p key={n} className="text-xs text-slate-500 mt-2">{n}</p>)}
+            </div>
+
+            {recorded && (
+              <div className="bg-slate-50 rounded-2xl border border-slate-200 p-5 text-sm text-slate-600">
+                <span className="font-semibold">Recorded in your ledger for {r.year}:</span> {S(recorded.total_sgd)} salary + bonus
+                {recorded.months.length > 0 && <> across {recorded.months.length} month{recorded.months.length > 1 ? "s" : ""}</>}.
+                {" "}Only rows categorised <span className="font-mono text-xs">Income › Salary</span> or <span className="font-mono text-xs">Income › Bonus</span> count; reimbursements don&apos;t.
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ── Page shell ───────────────────────────────────────────────────────────────
 
 const TABS = [
@@ -1949,6 +2116,7 @@ const TABS = [
   ["recurring", "Recurring", Repeat],
   ["investments", "Investments", LineChartIcon],
   ["budget", "Budget & Categories", Target],
+  ["tax", "Tax", Calculator],
   ["settings", "Settings", Settings2],
 ];
 
@@ -2032,6 +2200,9 @@ const FinancePage = () => {
       </div>
       <div hidden={tab !== "budget"}>
         {seen.budget && <BudgetGoalsTab categories={categories} reloadCategories={reloadCategories} reloadAll={reloadAll} />}
+      </div>
+      <div hidden={tab !== "tax"}>
+        {seen.tax && <TaxTab reloadAll={reloadAll} />}
       </div>
       <div hidden={tab !== "settings"}>
         {seen.settings && <SettingsTab reloadAll={reloadAll} />}
