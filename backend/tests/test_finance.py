@@ -384,3 +384,26 @@ def test_baseline_allowed_with_kept_goal(client):
     assert r.status_code == 200, r.text
     assert [g["label"] for g in client.get("/finance/goals").json()] == ["Kept"]
     assert client.post("/finance/baseline").status_code == 409
+
+
+def test_settled_pending_contribution_counts_after_valuation(client):
+    """Baseline pattern: a pending contribution and a valuation on the same day;
+    the bank statement dates the transfer a day earlier. Settling it must not
+    hide it behind the valuation (which excluded it) — the gain stays the
+    platform's."""
+    _acct(client, name="DBS", external_ref="dbs")
+    _acct(client, name="Robo", external_ref="robo", account_type="investment", opening_balance=950)
+    client.post("/finance/valuations", json={"account_id": 2, "as_of": "2026-08-31", "market_value": 1000})
+    client.post("/finance/transactions", json={
+        "account_id": 2, "transaction_date": "2026-08-31", "transaction_type": "investment_contribution",
+        "amount": 500, "status": "pending"})
+    p = copy.deepcopy(PAYLOAD)
+    p["transactions"] = [dict(PAYLOAD["transactions"][2], transaction_date="2026-08-30", amount=-500)]
+    p["accounts"], p["warnings"] = [], []
+    iid = client.post("/finance/imports", content=json.dumps(p)).json()["id"]
+    client.post(f"/finance/imports/{iid}/approve", json={})
+    robo_leg = next(t for t in client.get("/finance/transactions").json() if t["account_id"] == 2)
+    assert robo_leg["status"] == "settled" and robo_leg["transaction_date"] == "2026-09-01"
+    finance.invalidate_summary_cache()
+    robo = next(a for a in client.get("/finance/summary").json()["accounts"] if a["name"] == "Robo")
+    assert robo["settled"] == 1500 and robo["investment_gain"] == 50

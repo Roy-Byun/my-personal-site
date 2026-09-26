@@ -13,7 +13,7 @@ Nothing reaches finance_transactions without passing through approve.
 
 import json
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
@@ -43,6 +43,7 @@ from models import (
     FinanceMerchantRule,
     FinanceStatementImport,
     FinanceTransaction,
+    FinanceValuation,
     User,
 )
 from routers.finance import invalidate_summary_cache
@@ -523,11 +524,11 @@ def approve_import(
                         leg.transfer_group_id = group
                         leg.transfer_account_id = opp.account_id
                     # The statement shows the money moved: a pending leg has
-                    # settled, on the statement's date (so it lands after any
-                    # valuation that was taken while it was still in flight).
+                    # settled. It was not part of any valuation taken while it
+                    # was in flight, so it must land after the latest one.
                     if other.status == "pending":
                         other.status = "settled"
-                        other.transaction_date = s.transaction_date
+                        other.transaction_date = _settlement_date(db, other, s.transaction_date)
                 else:
                     ledger.create_counter_leg(db, txn, counter, idx, base)
         s.approved_transaction_id = txn.id
@@ -540,6 +541,20 @@ def approve_import(
     db.commit()
     invalidate_summary_cache()
     return {"import_id": import_id, "promoted": promoted, "skipped": skipped, "counts": _counts(db, import_id)}
+
+
+def _settlement_date(db: Session, leg: FinanceTransaction, statement_date: date) -> date:
+    """Date for a pending leg that a statement just settled: the statement's
+    date, but never on/before a valuation taken while the leg was still
+    pending (that valuation excluded it, and balances only add settled rows
+    dated after the latest valuation)."""
+    val = db.query(FinanceValuation).filter(
+        FinanceValuation.account_id == leg.account_id,
+        FinanceValuation.as_of >= leg.transaction_date,
+    ).order_by(FinanceValuation.as_of.desc()).first()
+    if val is not None and statement_date <= val.as_of:
+        return val.as_of + timedelta(days=1)
+    return statement_date
 
 
 def _check_closing_balances(db: Session, imp: FinanceStatementImport) -> None:
