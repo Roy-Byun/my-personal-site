@@ -439,3 +439,110 @@ def test_both_sides_of_fx_transfer_in_one_import_are_linked(client):
     assert jp["original_amount"] == -4990
     bal = _balances(client)
     assert bal["dbs"] == -6529.93 - 41.75 and bal["dbs_usd"] == 5000
+
+
+def test_import_confirms_recurring_placeholder_instead_of_duplicating(client):
+    _acct(client, name="DBS", external_ref="dbs")
+    _acct(client, name="DBS USD", external_ref="dbs_usd", currency="USD")
+    video = _cat_id(client, "Video", parent="Subscriptions")
+    ai = _cat_id(client, "AI services", parent="Subscriptions")
+    salary = _cat_id(client, "Salary", parent="Income")
+    for body in (
+        {"label": "YouTube Premium", "amount": 27.98, "day_of_month": 1, "account_id": 1, "category_id": video},
+        {"label": "ChatGPT", "amount": 21.80, "currency": "USD", "day_of_month": 23, "account_id": 2, "category_id": ai},
+        {"label": "Salary", "amount": 4500, "type": "income", "day_of_month": 29, "account_id": 1, "category_id": salary},
+    ):
+        assert client.post("/finance/recurring", json=body).status_code == 201
+    assert finance.materialise_recurring(finance_db(), date(2026, 9, 30)) == 3
+    assert len(client.get("/finance/transactions").json()) == 3
+
+    p = copy.deepcopy(PAYLOAD)
+    p["accounts"], p["warnings"] = [], []
+    p["transactions"] = [
+        {"account_ref": "dbs", "transaction_date": "2026-09-01", "description_raw": "GOOGLE*YOUTUBEPREMIUM",
+         "transaction_type": "expense", "amount": -27.98, "currency": "SGD", "category": "subscriptions",
+         "subcategory": "video", "confidence": 0.95},
+        # ChatGPT billed on the SGD card this month (FX-converted): still the same subscription.
+        {"account_ref": "dbs", "transaction_date": "2026-09-23", "description_raw": "OPENAI *CHATGPT SUBSCR",
+         "transaction_type": "expense", "amount": -28.66, "currency": "SGD", "original_amount": -21.80,
+         "original_currency": "USD", "category": "subscriptions", "subcategory": "ai_services", "confidence": 0.95},
+        {"account_ref": "dbs", "transaction_date": "2026-09-28", "description_raw": "GIRO Salary",
+         "transaction_type": "income", "amount": 4500, "currency": "SGD", "category": "income",
+         "subcategory": "salary", "confidence": 0.99},
+        {"account_ref": "dbs", "transaction_date": "2026-09-05", "description_raw": "NTUC",
+         "transaction_type": "expense", "amount": -27.00, "currency": "SGD", "category": "food",
+         "subcategory": "groceries", "confidence": 0.95},
+    ]
+    iid = client.post("/finance/imports", content=json.dumps(p)).json()["id"]
+    assert client.post(f"/finance/imports/{iid}/approve", json={}).json()["promoted"] == 4
+    txns = client.get("/finance/transactions").json()
+    assert len(txns) == 4                                   # 3 confirmed placeholders + 1 new
+    chatgpt = next(t for t in txns if "CHATGPT" in t["description_raw"])
+    assert chatgpt["source"] == "import" and chatgpt["recurring_id"] and chatgpt["account_id"] == 1
+    assert chatgpt["amount"] == -28.66 and chatgpt["currency"] == "SGD"
+    assert all(t["source"] == "import" for t in txns)
+
+
+def test_allowance_card_numbers(client):
+    client.put("/finance/profile", json={"monthly_income": 4500, "income_currency": "SGD", "tax_reserve": 150})
+    _acct(client, name="DBS", external_ref="dbs")
+    _acct(client, name="Robo", account_type="investment", planned_monthly_contribution=1000)
+    client.post("/finance/recurring", json={"label": "Violin", "amount": 399, "day_of_month": 1, "account_id": 1})
+    client.post("/finance/transactions", json={
+        "account_id": 1, "transaction_date": str(THIS_MONTH), "transaction_type": "expense", "amount": -100})
+    a = client.get("/finance/summary").json()["allowance"]
+    assert a["allowed_variable_base"] == 4500 - 150 - 1000 - 399
+    assert a["spent_variable_base"] == 100
+    assert a["left_base"] == 4500 - 150 - 1000 - 399 - 100
+    assert a["safe_daily_base"] == round(a["left_base"] / a["days_left"], 2)
+
+
+def test_budget_suggestions_skip_unusual_month(client):
+    _acct(client, name="DBS", external_ref="dbs")
+    food = _cat_id(client, "Food")
+    shopping = _cat_id(client, "Shopping")
+    months = []
+    y, m = TODAY.year, TODAY.month
+    for _ in range(4):                                       # 4 complete months before this one
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+        months.append(date(y, m, 10))
+    for i, d in enumerate(months):
+        client.post("/finance/transactions", json={
+            "account_id": 1, "transaction_date": str(d), "transaction_type": "expense",
+            "amount": -100 - i, "category_id": food})
+    # The oldest month is a trip: big shopping spree.
+    client.post("/finance/transactions", json={
+        "account_id": 1, "transaction_date": str(months[-1]), "transaction_type": "expense",
+        "amount": -2000, "category_id": shopping})
+    r = client.get("/finance/budgets/suggest").json()
+    trip = f"{months[-1]:%Y-%m}"
+    assert next(x for x in r["months"] if x["month"] == trip)["unusual"] is True
+    assert trip not in [x["month"] for x in r["months"] if x["selected"]]
+    sug = {s["category"]: s for s in r["suggestions"]}
+    assert "Shopping" not in sug                             # only spent in the excluded month
+    assert sug["Food"]["average_base"] == 101.0 and sug["Food"]["suggested"] == 110.0
+    # Explicit selection overrides the default.
+    r = client.get(f"/finance/budgets/suggest?months={trip}").json()
+    assert {s["category"] for s in r["suggestions"]} == {"Food", "Shopping"}
+
+
+def test_budget_suggestions_skip_sparse_month(client):
+    _acct(client, name="DBS", external_ref="dbs")
+    food = _cat_id(client, "Food")
+    y, m = TODAY.year, TODAY.month
+    ds = []
+    for _ in range(4):
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+        ds.append(date(y, m, 28))
+    for d, amt in zip(ds, (-200, -200, -200, -5)):           # oldest month: a stray 5.00
+        client.post("/finance/transactions", json={
+            "account_id": 1, "transaction_date": str(d), "transaction_type": "expense",
+            "amount": amt, "category_id": food})
+    r = client.get("/finance/budgets/suggest").json()
+    stray = next(x for x in r["months"] if x["month"] == f"{ds[-1]:%Y-%m}")
+    assert stray["sparse"] and not stray["selected"]
+    assert r["suggestions"][0]["average_base"] == 200.0
