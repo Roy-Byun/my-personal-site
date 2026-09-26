@@ -9,7 +9,7 @@ name: Mini PC cleanup
 #      postgres 16, its n8n). Other n8n instances are never touched.
 #   3. Optionally removes Portainer and its volume
 #   4. Removes Docker images no container uses, unused anonymous volumes and
-#      build cache older than 3 days
+#      build cache older than 3 days (or all of it with all_build_cache)
 #   5. Removes old GitHub runner versions and installer tarballs in $HOME
 # Things that need sudo (packages, journal, /opt) are listed at the end for
 # you to run over SSH.
@@ -26,6 +26,10 @@ on:
         description: "Also remove Portainer (Docker admin web UI on port 9000)"
         type: boolean
         default: false
+      all_build_cache:
+        description: "Delete ALL Docker build cache (next deploy rebuilds from scratch once)"
+        type: boolean
+        default: false
 
 concurrency:
   group: mini-pc-maintenance
@@ -38,6 +42,7 @@ jobs:
     env:
       MODE: ${{ inputs.mode }}
       REMOVE_PORTAINER: ${{ inputs.remove_portainer }}
+      ALL_BUILD_CACHE: ${{ inputs.all_build_cache }}
       STACK: ai-aoi-stack
     steps:
       - name: Plan and clean up
@@ -45,7 +50,7 @@ jobs:
         run: |
           set -uo pipefail
           run() { if [ "$MODE" = delete ]; then echo "+ $*"; "$@"; else echo "[dry-run] $*"; fi; }
-          echo "Mode: $MODE   remove Portainer: $REMOVE_PORTAINER"
+          echo "Mode: $MODE   remove Portainer: $REMOVE_PORTAINER   all build cache: $ALL_BUILD_CACHE"
           df -h / | tail -1 | awk '{print "Disk before: "$3" used, "$4" free ("$5")"}'
 
           echo "::group::Containers by compose project"
@@ -96,7 +101,11 @@ jobs:
           if [ "$MODE" = delete ]; then
             docker image prune -a -f | tail -1
             docker volume prune -f | tail -1
-            docker builder prune -a -f --filter until=72h | tail -1
+            if [ "$ALL_BUILD_CACHE" = true ]; then
+              docker builder prune -a -f | tail -1
+            else
+              docker builder prune -a -f --filter until=72h | tail -1
+            fi
           else
             # Image IDs still used by containers that stay.
             REMOVE=" ${CONTAINERS[*]} "
@@ -107,7 +116,7 @@ jobs:
               grep -qxF "$id" <<<"$KEEP_IMAGES" || echo "   $img ($size)"
             done
             echo "[dry-run] docker volume prune -f   (anonymous volumes not used by any container)"
-            echo "[dry-run] docker builder prune -a -f --filter until=72h   (build cache: $(docker system df --format '{{if eq .Type "Build Cache"}}{{.Size}}{{end}}' | tr -d '\n'))"
+            echo "[dry-run] docker builder prune -a -f $( [ "$ALL_BUILD_CACHE" = true ] || echo '--filter until=72h')   (build cache: $(docker system df --format '{{if eq .Type "Build Cache"}}{{.Size}}{{end}}' | tr -d '\n'))"
           fi
 
           # ── 5. Old runner versions ──────────────────────────────────────
