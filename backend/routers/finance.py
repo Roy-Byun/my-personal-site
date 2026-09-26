@@ -1480,6 +1480,84 @@ def budgets_endpoint(_: User = Depends(require_admin), db: Session = Depends(get
     return {"base_currency": base_ccy, "budgets": _budgets_from_spend(idx, cats, spent, base_ccy)}
 
 
+UNUSUAL_MONTH_FACTOR = 1.4   # months above 1.4× the median spend are flagged (trips, one-offs)
+SPARSE_MONTH_FACTOR = 0.25   # months below a quarter of the median have too little data
+
+
+@router.get("/budgets/suggest")
+def suggest_budgets(
+    months: Optional[str] = Query(default=None, description="comma-separated YYYY-MM to average"),
+    _: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    """Suggest a monthly budget per top-level spending category from actual
+    spending (expenses + fees − refunds, subcategories rolled up).
+
+    Lists the last 12 months with their total spend. Without `months`, the
+    default selection is every complete month that has spending, minus months
+    whose spend is unusually high (> 1.4× the median — e.g. a trip) or too low
+    to be a real month (< 0.25× the median)."""
+    profile = _get_or_create_profile(db)
+    base_ccy = profile.base_currency or "SGD"
+    idx = FxIndex(db)
+    cats = db.query(FinanceCategory).order_by(
+        FinanceCategory.sort_order.asc(), FinanceCategory.name.asc()).all()
+    cidx = CategoryIndex(cats)
+    today = date.today()
+    keys = []
+    y, m = today.year, today.month
+    for _i in range(12):
+        keys.append(f"{y:04d}-{m:02d}")
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    keys.reverse()
+    first = _month_range(*map(int, keys[0].split("-")))[0]
+    txns = _settled_between(db, first, _month_range(today.year, today.month)[1])
+    by_month: dict = defaultdict(list)
+    for t in txns:
+        by_month[f"{t.transaction_date.year:04d}-{t.transaction_date.month:02d}"].append(t)
+    spent = {k: _category_flows(idx, cidx, by_month.get(k, []), base_ccy)[0] for k in keys}
+    totals = {k: round(sum(v for v in spent[k].values() if v > 0), 2) for k in keys}
+    current = f"{today.year:04d}-{today.month:02d}"
+    with_data = [k for k in keys if totals[k] > 0 and k != current]
+    ordered = sorted(totals[k] for k in with_data)
+    median = ordered[len(ordered) // 2] if ordered else 0.0
+    unusual = {k for k in with_data if len(with_data) >= 3 and median and totals[k] > UNUSUAL_MONTH_FACTOR * median}
+    # A few card payments dated at the end of a month that isn't otherwise
+    # tracked (e.g. before the first imported statement) aren't a real month.
+    sparse = {k for k in with_data if median and totals[k] < SPARSE_MONTH_FACTOR * median}
+
+    if months:
+        selected = [k.strip() for k in months.split(",") if k.strip() in keys]
+    else:
+        selected = [k for k in with_data if k not in unusual and k not in sparse]
+
+    suggestions = []
+    for c in cats:
+        if c.parent_id is not None or not c.is_active or c.kind in ("income", "transfer", "investment", "tax"):
+            continue
+        per_month = {k: round(spent[k].get(c.name, 0.0), 2) for k in selected}
+        avg = sum(per_month.values()) / len(selected) if selected else 0.0
+        if avg <= 0:
+            continue
+        suggestions.append({
+            "category_id": c.id, "category": c.name, "kind": c.kind,
+            "per_month": per_month, "average_base": round(avg, 2),
+            # Round up to the next 10 so a typical month fits.
+            "suggested": float(-(-avg // 10) * 10),
+            "current_budget": c.monthly_budget, "current_currency": c.budget_currency,
+        })
+    suggestions.sort(key=lambda r: -r["average_base"])
+    return {
+        "base_currency": base_ccy,
+        "months": [{"month": k, "spend_base": totals[k], "has_data": totals[k] > 0,
+                    "partial": k == current, "unusual": k in unusual, "sparse": k in sparse,
+                    "selected": k in selected}
+                   for k in keys],
+        "suggestions": suggestions,
+    }
+
+
 # Short-lived cache for /summary: admin-only, read-heavy, hit from both the
 # dashboard and (indirectly) other views. Writes through this router clear it.
 _SUMMARY_TTL = 15.0
@@ -1716,6 +1794,32 @@ def summary(
         income - tax_reserve_base - planned_investments_base
         - recurring_total_base - allowance_max_base
     )
+    # ── Allowed spending this month ──────────────────────────────────────
+    # What's left for day-to-day (variable) spending once the plan is paid:
+    # income − tax reserve − planned investing − recurring fixed costs.
+    dim_now = calendar.monthrange(today.year, today.month)[1]
+    days_left = dim_now - today.day + 1
+    allowed_variable = income - tax_reserve_base - planned_investments_base - recurring_total_base
+    spent_variable = this_month_fig["variable_spend_base"]
+    left_variable = allowed_variable - spent_variable
+    budgets_total = 0.0
+    for c in cats:
+        if c.parent_id is None and c.is_active and c.monthly_budget:
+            budgets_total += _b(c.monthly_budget, c.budget_currency or base_ccy)
+    allowance = {
+        "income_base": round(income, 2),
+        "tax_reserve_base": round(tax_reserve_base, 2),
+        "planned_investments_base": round(planned_investments_base, 2),
+        "recurring_base": round(recurring_total_base, 2),
+        "allowed_variable_base": round(allowed_variable, 2),
+        "spent_variable_base": round(spent_variable, 2),
+        "spent_fixed_base": this_month_fig["recurring_base"],
+        "left_base": round(left_variable, 2),
+        "days_left": days_left,
+        "safe_daily_base": round(max(0.0, left_variable) / days_left, 2) if days_left else 0.0,
+        "category_budgets_total_base": round(budgets_total, 2),
+    }
+
     emergency_fund = {
         "opening_base": round(opening, 2),
         "contributed_base": round(contributed, 2),
@@ -1806,6 +1910,7 @@ def summary(
         "recent_months": recent_months,
         "recurring": {"items": recurring_rows, "recurring_total_base": round(recurring_total_base, 2)},
         "emergency_fund": emergency_fund,
+        "allowance": allowance,
         "projection": projection,
         "reminder": reminder,
         "review_queue_count": review_queue,

@@ -926,6 +926,104 @@ const KIND_BADGE = {
   transfer: "bg-slate-200 text-slate-600",
 };
 
+// Suggest budgets from actual spending. Months with unusually high spend
+// (a trip, a one-off purchase) start unticked; tick/untick to recalculate.
+const SuggestBudgetsModal = ({ onClose, onApplied }) => {
+  const [data, setData] = useState(null);
+  const [months, setMonths] = useState(null);           // null = server default
+  const [rows, setRows] = useState({});                  // category_id -> {apply, value}
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const qs = months ? `?months=${months.join(",")}` : "";
+    api(`/budgets/suggest${qs}`).then((d) => {
+      setData(d);
+      setRows(Object.fromEntries(d.suggestions.map((x) => [x.category_id, { apply: true, value: x.suggested }])));
+      setErr("");
+    }).catch((e) => setErr(e.message));
+  }, [months]);
+
+  const selected = data ? data.months.filter((m) => m.selected).map((m) => m.month) : [];
+  const toggle = (m) => {
+    const next = selected.includes(m) ? selected.filter((x) => x !== m) : [...selected, m].sort();
+    setMonths(next.length ? next : ["none"]);
+  };
+  const apply = async () => {
+    setBusy(true); setErr("");
+    try {
+      for (const x of data.suggestions) {
+        const r = rows[x.category_id];
+        if (!r?.apply || r.value === "" || r.value == null) continue;
+        await api(`/categories/${x.category_id}`, { method: "PUT", body: JSON.stringify({
+          monthly_budget: Number(r.value), budget_currency: data.base_currency,
+        }) });
+      }
+      onApplied(); onClose();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const base = data?.base_currency || "SGD";
+  const total = data ? data.suggestions.reduce((a, x) => a + (rows[x.category_id]?.apply ? Number(rows[x.category_id].value) || 0 : 0), 0) : 0;
+  const monthLabel = (ym) => new Date(`${ym}-01T00:00:00`).toLocaleString(undefined, { month: "short", year: "2-digit" });
+
+  return (
+    <Modal title="Suggest budgets from your spending" onClose={onClose}>
+      {!data ? <p className="text-sm text-slate-400">{err || "Loading…"}</p> : (
+        <div className="space-y-4">
+          <div>
+            <p className="text-xs text-slate-500 mb-2">Average these months (tap to include/exclude):</p>
+            <div className="flex flex-wrap gap-1.5">
+              {data.months.filter((m) => m.has_data).map((m) => {
+                const on = m.selected;
+                return (
+                  <button key={m.month} type="button" onClick={() => toggle(m.month)} aria-pressed={on}
+                    className={`text-xs rounded-full border px-2.5 py-1 ${on ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-200 text-slate-500"}`}>
+                    {on ? "✓ " : ""}{monthLabel(m.month)} · {fmtMoney(m.spend_base, base)}
+                    {m.unusual && <span className={on ? "" : "text-amber-700 font-semibold"}> · unusual</span>}
+                    {m.sparse && " · little data"}
+                    {m.partial && " · so far"}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1.5">Months marked “unusual” (well above your typical month — e.g. a trip) or “little data” start excluded. The current month is partial.</p>
+          </div>
+          {data.suggestions.length === 0 ? <p className="text-sm text-slate-400">No spending in the selected months.</p> : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-[10px] uppercase tracking-widest text-slate-400 border-b">
+                  <tr><th className="py-2 pr-2"></th><th className="py-2 pr-2">Category</th><th className="py-2 px-2 text-right">Average</th>
+                    <th className="py-2 px-2 text-right">Now</th><th className="py-2 pl-2 text-right">New budget</th></tr>
+                </thead>
+                <tbody>
+                  {data.suggestions.map((x) => {
+                    const r = rows[x.category_id] || { apply: false, value: x.suggested };
+                    const set = (patch) => setRows((s2) => ({ ...s2, [x.category_id]: { ...r, ...patch } }));
+                    return (
+                      <tr key={x.category_id} className="border-b last:border-0">
+                        <td className="py-1.5 pr-2"><input type="checkbox" checked={r.apply} onChange={(e) => set({ apply: e.target.checked })} className="accent-indigo-600" aria-label={`Apply ${x.category}`} /></td>
+                        <td className="py-1.5 pr-2 text-slate-700" title={Object.entries(x.per_month).map(([m, v]) => `${m}: ${v}`).join("\n")}>{x.category}</td>
+                        <td className="py-1.5 px-2 text-right text-slate-500">{fmtMoney(x.average_base, base)}</td>
+                        <td className="py-1.5 px-2 text-right text-slate-400">{x.current_budget != null ? fmtMoney(x.current_budget, x.current_currency || base) : "—"}</td>
+                        <td className="py-1.5 pl-2 text-right"><input type="number" step="10" min="0" value={r.value} onChange={(e) => set({ value: e.target.value })} className="w-24 border border-slate-200 rounded px-2 py-1 text-right text-sm" /></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="text-xs text-slate-500">Total of ticked budgets: <span className="font-semibold text-slate-700">{fmtMoney(total, base)}</span>. Suggestions are the average rounded up to the next 10 — edit any before applying.</p>
+          {err && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{err}</p>}
+          <div className="flex gap-3">
+            <button onClick={apply} disabled={busy || data.suggestions.length === 0} className="flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-60">{busy ? "Applying…" : "Apply ticked budgets"}</button>
+            <button type="button" onClick={onClose} className="px-4 text-sm text-slate-500 border rounded-lg hover:bg-slate-50">Cancel</button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+};
+
 // Budget grid: one row per top-level category with this-month spend +
 // progress; subcategories expand underneath. Edits go through CategoryModal.
 const CategoryBudgetGrid = ({ categories, budgets = [], base = "SGD", onChanged }) => {
@@ -934,6 +1032,7 @@ const CategoryBudgetGrid = ({ categories, budgets = [], base = "SGD", onChanged 
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState({});
+  const [suggest, setSuggest] = useState(false);
   const byName = Object.fromEntries(budgets.map((b) => [b.category, b]));
   const tops = topCategories(categories);
 
@@ -964,7 +1063,11 @@ const CategoryBudgetGrid = ({ categories, budgets = [], base = "SGD", onChanged 
           <h2 className="text-lg font-bold text-slate-800">Category budgets</h2>
           <p className="text-xs text-slate-400">Spend and progress are for the current month; subcategories roll up into their parent.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => setSuggest(true)}
+            className="border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-lg text-sm font-semibold hover:bg-indigo-50 flex items-center gap-1">
+            <Sparkles className="w-4 h-4" /> Suggest from spending
+          </button>
           <button onClick={seedDefaults} disabled={busy}
             className="border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg text-sm font-semibold hover:bg-slate-50 disabled:opacity-60">
             Add standard categories
@@ -1050,6 +1153,7 @@ const CategoryBudgetGrid = ({ categories, budgets = [], base = "SGD", onChanged 
         </table>
       </div>
       {modal && <CategoryModal initial={modal} categories={categories} onClose={() => setModal(null)} onSaved={onChanged} />}
+      {suggest && <SuggestBudgetsModal onClose={() => setSuggest(false)} onApplied={onChanged} />}
       {del && (
         <Modal title={`Delete — ${del.name}`} onClose={() => setDel(null)}>
           <p className="text-sm text-slate-600 mb-4">

@@ -493,6 +493,20 @@ def approve_import(
             existing = ledger.find_matching_leg(
                 db, acc.id, s.amount, s.currency, s.transaction_date, counter_account_id=counter.id,
             )
+        if existing is None and counter is None:
+            # A recurring item's expected entry for this charge? The statement
+            # confirms it: fill it in rather than adding a second one.
+            existing = _match_recurring(db, acc, s, idx, base)
+            if existing is not None:
+                existing.account_id = acc.id
+                existing.transaction_date, existing.posting_date = s.transaction_date, s.posting_date
+                existing.transaction_type = s.transaction_type
+                existing.amount, existing.currency = s.amount, s.currency
+                existing.original_amount, existing.original_currency = s.original_amount, s.original_currency
+                existing.exchange_rate = s.exchange_rate
+                existing.status = "settled"
+                existing.notes = s.notes or existing.notes
+                ledger.lock_base_amount(existing, idx, base)
         if existing is not None:
             existing.description_raw = s.description_raw
             existing.merchant_normalized = s.merchant_normalized
@@ -554,6 +568,55 @@ def approve_import(
     db.commit()
     invalidate_summary_cache()
     return {"import_id": import_id, "promoted": promoted, "skipped": skipped, "counts": _counts(db, import_id)}
+
+
+RECURRING_MATCH_DAYS = 10
+
+
+def _match_recurring(db: Session, acc: FinanceAccount, s: FinanceImportTransaction,
+                     idx: FxIndex, base: str) -> Optional[FinanceTransaction]:
+    """The unconfirmed entry a recurring item generated for this statement row.
+
+    Same direction (spend vs income), same account (or none — or another
+    account with the exact same category), same top-level category when both
+    have one, charge date within ±10 days, and amount
+    within 15% (min 1.00) in base currency — subscriptions billed in USD
+    drift with FX. Closest date wins."""
+    if s.transaction_type in C.SPEND_TYPES:
+        kinds = C.SPEND_TYPES
+    elif s.transaction_type in C.INCOME_TYPES:
+        kinds = C.INCOME_TYPES
+    else:
+        return None
+    cidx = CategoryIndex(db.query(FinanceCategory).all())
+    row_top = cidx.top(s.category_id)
+    row_base = abs(idx.to_base(s.amount, s.currency, base) or s.amount)
+    best, best_gap = None, None
+    for t in db.query(FinanceTransaction).filter(
+        FinanceTransaction.source == "recurring",
+        FinanceTransaction.recurring_id.isnot(None),
+        FinanceTransaction.transaction_type.in_(kinds),
+        FinanceTransaction.transaction_date >= s.transaction_date - timedelta(days=RECURRING_MATCH_DAYS),
+        FinanceTransaction.transaction_date <= s.transaction_date + timedelta(days=RECURRING_MATCH_DAYS),
+    ).all():
+        if (t.amount < 0) != (s.amount < 0):
+            continue
+        if t.account_id not in (None, acc.id) and (
+            t.category_id is None or t.category_id != s.category_id
+        ):
+            # Charged to a different account (e.g. the subscription moved to
+            # another card): only accept an exact category match.
+            continue
+        t_top = cidx.top(t.category_id)
+        if row_top is not None and t_top is not None and row_top.id != t_top.id:
+            continue
+        t_base = abs(ledger.base_value(t, idx, base))
+        if abs(t_base - row_base) > max(1.0, 0.15 * max(t_base, row_base)):
+            continue
+        gap = abs((t.transaction_date - s.transaction_date).days)
+        if best is None or gap < best_gap:
+            best, best_gap = t, gap
+    return best
 
 
 def _sibling_row(db: Session, import_id: int, s: FinanceImportTransaction):

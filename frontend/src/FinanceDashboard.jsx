@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Wallet, Target, TrendingUp, PiggyBank, AlertTriangle, RefreshCw, Info,
-  ShieldCheck, CalendarClock, Repeat, FileUp,
+  ShieldCheck, CalendarClock, Repeat, FileUp, Wallet2, CheckCircle2,
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend,
@@ -44,6 +44,54 @@ const ChartCard = ({ title, hint, children }) => (
     {children}
   </div>
 );
+
+// What's left for day-to-day spending this month once the plan is paid.
+const AllowanceCard = ({ al, base }) => {
+  const allowed = al.allowed_variable_base;
+  const pct = allowed > 0 ? Math.min(100, (al.spent_variable_base / allowed) * 100) : 100;
+  const over = al.left_base < 0;
+  const tight = !over && allowed > 0 && pct >= 75;
+  const bar = over ? "bg-rose-500" : tight ? "bg-amber-500" : "bg-emerald-500";
+  const StatusIcon = over || tight ? AlertTriangle : CheckCircle2;
+  const status = over
+    ? `Over by ${fmtMoney(-al.left_base, base)}`
+    : allowed <= 0 ? "No room left in the plan" : tight ? "Getting tight" : "On track";
+  const available = al.income_base - al.tax_reserve_base - al.planned_investments_base;
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2 text-slate-400">
+          <Wallet2 className="w-4 h-4 text-indigo-600" />
+          <span className="text-[10px] font-bold uppercase tracking-widest">Allowed spending this month</span>
+        </div>
+        <span className={`inline-flex items-center gap-1 text-xs font-semibold ${over ? "text-rose-600" : tight ? "text-amber-600" : "text-emerald-600"}`}>
+          <StatusIcon className="w-3.5 h-3.5" /> {status}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-3">
+        <div><div className="text-[11px] text-slate-400">Allowed (day-to-day)</div><div className="text-xl font-extrabold text-slate-800">{fmtMoney(allowed, base)}</div></div>
+        <div><div className="text-[11px] text-slate-400">Spent so far</div><div className="text-xl font-extrabold text-slate-800">{fmtMoney(al.spent_variable_base, base)}</div></div>
+        <div><div className="text-[11px] text-slate-400">Left</div><div className={`text-xl font-extrabold ${over ? "text-rose-600" : "text-slate-800"}`}>{fmtMoney(al.left_base, base)}</div></div>
+        <div><div className="text-[11px] text-slate-400">Safe per day · {al.days_left} day{al.days_left === 1 ? "" : "s"} left</div><div className="text-xl font-extrabold text-slate-800">{fmtMoney(al.safe_daily_base, base)}</div></div>
+      </div>
+      <div className="h-2 rounded-full bg-slate-100 overflow-hidden mb-3">
+        <div className={`h-full ${bar}`} style={{ width: `${Math.max(0, pct)}%` }} />
+      </div>
+      <p className="text-[11px] text-slate-500">
+        {fmtMoney(al.income_base, base)} income − {fmtMoney(al.tax_reserve_base, base)} tax reserve
+        − {fmtMoney(al.planned_investments_base, base)} planned investing − {fmtMoney(al.recurring_base, base)} recurring
+        = {fmtMoney(allowed, base)} for everything else. Recurring costs paid so far: {fmtMoney(al.spent_fixed_base, base)}.
+        {al.category_budgets_total_base > 0 && (
+          <> Category budgets add up to {fmtMoney(al.category_budgets_total_base, base)}
+            {al.category_budgets_total_base > available
+              ? <span className="text-amber-700 font-semibold"> — {fmtMoney(al.category_budgets_total_base - available, base)} more than the {fmtMoney(available, base)} left after tax and investing.</span>
+              : <> of the {fmtMoney(available, base)} left after tax and investing.</>}
+          </>
+        )}
+      </p>
+    </div>
+  );
+};
 
 // ── dashboard ────────────────────────────────────────────────────────────────
 
@@ -157,6 +205,7 @@ const FinanceDashboard = ({ refreshTick = 0, onOpenImport }) => {
     ? [{ name: "progress", value: Math.min(100, goal.completion_percent), fill: "#6366f1" }]
     : [];
 
+  const al = summary.allowance;
   const investments = summary.accounts.filter((a) => a.account_type === "investment");
   const reviewCount = summary.review_queue_count || 0;
   const fxMissing = summary.accounts.some((a) => a.after_pending_base == null)
@@ -237,6 +286,8 @@ const FinanceDashboard = ({ refreshTick = 0, onOpenImport }) => {
           value={fmtMoney(rec.recurring_total_base, base)}
           sub={`${rec.items.length} active item${rec.items.length === 1 ? "" : "s"}`} />
       </div>
+
+      {al && <AllowanceCard al={al} base={base} />}
 
       {/* Recent months + projection */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
