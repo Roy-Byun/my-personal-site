@@ -4,6 +4,13 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./local_dev.db")
 
+# SQLAlchemy 2.1 maps a bare "postgresql://" URL to the psycopg (v3) driver,
+# but the image ships psycopg2-binary — name the driver explicitly.
+for _prefix in ("postgresql://", "postgres://"):
+    if DATABASE_URL.startswith(_prefix):
+        DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL[len(_prefix):]
+        break
+
 _IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
 if _IS_SQLITE:

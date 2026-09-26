@@ -522,8 +522,12 @@ def approve_import(
                     for leg, opp in ((txn, other), (other, txn)):
                         leg.transfer_group_id = group
                         leg.transfer_account_id = opp.account_id
-                    # The statement shows the money moved: a pending leg has settled.
-                    other.status = "settled"
+                    # The statement shows the money moved: a pending leg has
+                    # settled, on the statement's date (so it lands after any
+                    # valuation that was taken while it was still in flight).
+                    if other.status == "pending":
+                        other.status = "settled"
+                        other.transaction_date = s.transaction_date
                 else:
                     ledger.create_counter_leg(db, txn, counter, idx, base)
         s.approved_transaction_id = txn.id

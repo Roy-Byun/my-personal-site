@@ -1821,11 +1821,8 @@ def summary(
 @router.post("/baseline")
 def import_baseline(_: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Idempotently seed the Aug-2026 starting state. Refuses if data exists."""
-    existing = (
-        db.query(FinanceAccount).count()
-        + db.query(FinanceTransaction).count()
-        + db.query(FinanceGoal).count()
-    )
+    # Goals and the profile survive the ledger reset, so only ledger rows block.
+    existing = db.query(FinanceAccount).count() + db.query(FinanceTransaction).count()
     if existing:
         raise HTTPException(409, "Finance data already exists; baseline import skipped")
 
@@ -1847,14 +1844,15 @@ def import_baseline(_: User = Depends(require_admin), db: Session = Depends(get_
     # Standard spending-category taxonomy
     ledger.seed_default_categories(db)
 
-    # Goal
-    db.add(FinanceGoal(
-        label="KRW 100M before National Service",
-        target_amount=100_000_000.0, target_currency="KRW",
-        target_date=date(2028, 11, 30),
-        note="Fixed-horizon savings goal; driven mainly by regular saving.",
-        is_primary=True,
-    ))
+    # Goal (kept goals are left alone)
+    if not db.query(FinanceGoal).count():
+        db.add(FinanceGoal(
+            label="KRW 100M before National Service",
+            target_amount=100_000_000.0, target_currency="KRW",
+            target_date=date(2028, 11, 30),
+            note="Fixed-horizon savings goal; driven mainly by regular saving.",
+            is_primary=True,
+        ))
 
     # Accounts. Cash: opening balance. Investments: opening balance = cost basis
     # (market value − platform total return) so D7's gain matches the platform,

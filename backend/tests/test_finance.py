@@ -308,7 +308,7 @@ def test_import_settles_matching_pending_contribution(client):
     _acct(client, name="DBS", external_ref="dbs")
     _acct(client, name="Robo", external_ref="robo", account_type="investment")
     client.post("/finance/transactions", json={
-        "account_id": 2, "transaction_date": "2026-09-04", "transaction_type": "investment_contribution",
+        "account_id": 2, "transaction_date": "2026-09-03", "transaction_type": "investment_contribution",
         "amount": 1000, "status": "pending"})
     p = copy.deepcopy(PAYLOAD)
     p["transactions"] = [PAYLOAD["transactions"][2]]
@@ -319,6 +319,7 @@ def test_import_settles_matching_pending_contribution(client):
     assert len(txns) == 2                               # linked, not a third leg
     robo = next(t for t in txns if t["account_id"] == 2)
     assert robo["status"] == "settled" and robo["transfer_group_id"]
+    assert robo["transaction_date"] == "2026-09-05"      # settles on the statement date
 
 
 def test_balance_mismatch_warning(client):
@@ -358,3 +359,28 @@ def test_reset_legacy_finance(monkeypatch, tmp_path):
     Base.metadata.create_all(bind=eng)
     main._reset_legacy_finance()                        # new schema → no-op
     assert "transaction_type" in {c["name"] for c in inspect(eng).get_columns("finance_transactions")}
+
+
+def test_postgres_url_uses_installed_psycopg2_driver(monkeypatch):
+    import importlib
+
+    import database
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db:5432/site")
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda url, **kw: url)
+    try:
+        importlib.reload(database)
+        assert database.DATABASE_URL == "postgresql+psycopg2://u:p@db:5432/site"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(database)
+
+
+def test_baseline_allowed_with_kept_goal(client):
+    """After the legacy reset goals survive; the baseline must still seed and
+    must not add a second goal."""
+    client.post("/finance/goals", json={"label": "Kept", "target_amount": 1, "is_primary": True})
+    r = client.post("/finance/baseline")
+    assert r.status_code == 200, r.text
+    assert [g["label"] for g in client.get("/finance/goals").json()] == ["Kept"]
+    assert client.post("/finance/baseline").status_code == 409
